@@ -28,3 +28,5 @@ services:
         value: "1"
       - key: EMBEDDER
         value: local
+      - key: EMBED_CACHE_DIR
+        value: /opt/models

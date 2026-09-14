@@ -80,6 +80,11 @@ OMNIROUTER_BASE_URL = env("OMNIROUTER_BASE_URL")
 # Embeddings. "local" needs no key; "gemini" reuses GEMINI_API_KEY.
 EMBEDDER = (env("EMBEDDER", default="local") or "local").lower()
 LOCAL_EMBED_MODEL = env("LOCAL_EMBED_MODEL", default="BAAI/bge-small-en-v1.5")
+# Where fastembed keeps the ONNX weights. It does NOT honour HF_HOME: it takes
+# a cache_dir argument and otherwise defaults to the system temp directory,
+# which a container may wipe or mount read only. Setting this explicitly is
+# what lets the Docker build bake the model into the image.
+EMBED_CACHE_DIR = env("EMBED_CACHE_DIR")
 GEMINI_EMBED_MODEL = env("GEMINI_EMBED_MODEL", default="gemini-embedding-001")
 
 ALLOW_CLIENT_KEYS = env_bool("ALLOW_CLIENT_KEYS", True)

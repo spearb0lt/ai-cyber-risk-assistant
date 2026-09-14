@@ -54,6 +54,7 @@ class LocalEmbedder(BaseEmbedder):
 
     def __init__(self, model_name: str | None = None) -> None:
         self.model_name = model_name or settings.LOCAL_EMBED_MODEL
+        self.cache_dir = settings.EMBED_CACHE_DIR
         self._model = None
 
     def available(self) -> tuple[bool, str]:
@@ -72,8 +73,13 @@ class LocalEmbedder(BaseEmbedder):
                     "The fastembed package is not installed, so local embeddings "
                     "are unavailable. Retrieval falls back to lexical search."
                 ) from exc
-            # Downloads once on first use, then cached on disk.
-            self._model = TextEmbedding(model_name=self.model_name)
+            # Downloads once on first use, then cached on disk. The cache
+            # directory is passed explicitly because fastembed ignores HF_HOME
+            # and would otherwise land in the system temp directory.
+            kwargs = {"model_name": self.model_name}
+            if self.cache_dir:
+                kwargs["cache_dir"] = self.cache_dir
+            self._model = TextEmbedding(**kwargs)
         return self._model
 
     def embed(self, texts: Sequence[str], *, is_query: bool = False) -> np.ndarray:
