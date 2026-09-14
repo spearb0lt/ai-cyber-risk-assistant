@@ -130,6 +130,14 @@ def deterministic_why(risk: RiskGroup) -> str:
             f"{service.business_impact.rstrip('.')}."
         )
 
+    advisory_sentence = ""
+    if risk.advisory:
+        a = risk.advisory
+        advisory_sentence = (
+            f" This morning's MDR advisory names it directly, as part of the "
+            f"{a.actor} '{a.campaign}' exploit chain ({a.exploit_chain})."
+        )
+
     gaps: list[str] = []
     if not asset.edr_installed:
         gaps.append("there is no EDR agent to detect what happens next")
@@ -145,11 +153,11 @@ def deterministic_why(risk: RiskGroup) -> str:
 
     return (
         f"{opening} The weakness is {vuln.vulnerability_name} on {where}."
-        f"{campaign_sentence}{business_sentence}{gap_sentence}"
+        f"{advisory_sentence}{campaign_sentence}{business_sentence}{gap_sentence}"
     )
 
 
-def deterministic_remediation(risk: RiskGroup, controls: list[Control]) -> str:
+def deterministic_remediation(risk: RiskGroup, controls: list[Control], hint=None) -> str:
     """Summarise the retrieved controls without a model, quoting the document."""
     if not controls:
         return (
@@ -186,11 +194,21 @@ def deterministic_remediation(risk: RiskGroup, controls: list[Control]) -> str:
             "Deploying endpoint detection on the affected assets closes the detection "
             "gap this risk depends on."
         )
+    if hint is not None:
+        # The team's own one line note. Kept last and clearly attributed, so it
+        # reads as the operational starting point beside the control rather
+        # than as the authoritative guidance, which is what the brief asks.
+        actions.append(
+            f"The security team's own remediation note for "
+            f"'{hint.hint.finding_type}' is triaged {hint.hint.priority_hint} and "
+            f"reads: {hint.hint.recommended_action.rstrip('.')}. Evidence expected "
+            f"at closure: {hint.hint.validation_evidence.rstrip('.')}."
+        )
     lines.extend(actions)
     return " ".join(lines)
 
 
-def _evidence_payload(risk: RiskGroup, controls: list[Control]) -> str:
+def _evidence_payload(risk: RiskGroup, controls: list[Control], hint=None) -> str:
     lead = risk.lead
     service = lead.service
     payload = {
@@ -247,6 +265,27 @@ def _evidence_payload(risk: RiskGroup, controls: list[Control]) -> str:
             }
             for r in risk.intel[:3]
         ],
+        "named_in_todays_mdr_advisory": (
+            {
+                "actor": risk.advisory.actor,
+                "campaign": risk.advisory.campaign,
+                "exploit_chain": risk.advisory.exploit_chain,
+                "ransomware": risk.advisory.ransomware,
+                "analyst_summary": risk.advisory.body,
+            }
+            if risk.advisory
+            else None
+        ),
+        "security_team_remediation_hint": (
+            {
+                "finding_type": hint.hint.finding_type,
+                "priority": hint.hint.priority_hint,
+                "recommended_action": hint.hint.recommended_action,
+                "validation_evidence": hint.hint.validation_evidence,
+            }
+            if hint
+            else None
+        ),
         "scoring_evidence": [e.as_dict() for e in lead.evidence],
         "retrieved_nist_controls": [
             {
@@ -265,6 +304,7 @@ def write(
     risk: RiskGroup,
     controls: list[Control],
     *,
+    hint=None,
     provider_id: str | None = None,
     model: str | None = None,
     use_llm: bool = True,
@@ -272,7 +312,7 @@ def write(
     """Produce the narrative, preferring the model but never depending on it."""
     fallback = Narrative(
         why=deterministic_why(risk),
-        remediation=deterministic_remediation(risk, controls),
+        remediation=deterministic_remediation(risk, controls, hint),
         source="deterministic",
     )
     if not use_llm:

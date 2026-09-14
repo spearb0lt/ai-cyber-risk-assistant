@@ -21,14 +21,8 @@ FACTOR_LABELS = {
     "cvss": "CVSS severity",
 }
 
-FACTOR_CAPS = {
-    "exploitability": 30,
-    "exposure": 22,
-    "campaign": 20,
-    "business_impact": 20,
-    "missing_controls": 12,
-    "cvss": 10,
-}
+# Caps are read from the analysis's own weighting rather than fixed here, so a
+# tuned report states the model it was actually produced under.
 
 
 def _yes_no(value: bool) -> str:
@@ -88,6 +82,14 @@ def _risk_section(brief: RiskBrief) -> list[str]:
             f"- **Business service at risk:** {risk.service_name} (no service record found)."
         )
 
+    if risk.advisory:
+        a = risk.advisory
+        lines.append(
+            f"- **Named in this morning's MDR advisory:** {a.actor}, "
+            f"'{a.campaign}'. Exploit chain {a.exploit_chain}. "
+            f"Ransomware: {a.ransomware or 'not stated'}."
+        )
+
     lines.append("")
     lines.append(f"**Why this ranks here.** {brief.narrative.why}")
     lines.append("")
@@ -95,14 +97,18 @@ def _risk_section(brief: RiskBrief) -> list[str]:
     # --- score breakdown, so the ranking is auditable ---
     lines.append("**Score breakdown**")
     lines.append("")
+    weights = risk.weights
     lines.append("| Factor | Points | Cap |")
     lines.append("| --- | ---: | ---: |")
     for key, label in FACTOR_LABELS.items():
+        cap = weights.cap_for(key)
         points = lead.factors.get(key, 0.0)
-        lines.append(f"| {label} | {points:.1f} | {FACTOR_CAPS[key]} |")
+        suffix = " (disabled)" if cap <= 0 else ""
+        lines.append(f"| {label}{suffix} | {points:.1f} | {cap:.0f} |")
     if risk.amplifier:
         lines.append(
-            f"| Blast radius ({len(assets)} assets affected) | +{risk.amplifier:.1f} | 6 |"
+            f"| Blast radius ({len(assets)} assets affected) | +{risk.amplifier:.1f} | "
+            f"{weights.amplifier_cap:.0f} |"
         )
     lines.append("")
 
@@ -126,6 +132,17 @@ def _risk_section(brief: RiskBrief) -> list[str]:
     else:
         lines.append(
             "**Remediation guidance:** no NIST control could be retrieved for this risk."
+        )
+        lines.append("")
+
+    if brief.hint:
+        hint = brief.hint.hint
+        lines.append(
+            f"**The security team's own note** (from `remediation_guidance.csv`, a "
+            f"starting point rather than the authority): "
+            f"*{hint.finding_type}*, triaged **{hint.priority_hint}**. "
+            f"{hint.recommended_action.rstrip('.')}. "
+            f"Evidence expected at closure: {hint.validation_evidence.rstrip('.')}."
         )
         lines.append("")
 
@@ -166,6 +183,16 @@ def render(analysis: Analysis, briefs: list[RiskBrief] | None = None) -> str:
         )
     lines.append("")
 
+    if not analysis.weights.is_default():
+        changed = analysis.weights.changed_from_default()
+        lines.append(
+            "> **This brief uses a custom weighting, not the published default "
+            "model.** Changed: "
+            + "; ".join(f"`{k}` {a:.0f} to {b:.0f}" for k, (a, b) in changed.items())
+            + "."
+        )
+        lines.append("")
+
     lines.append("## Estate at a glance")
     lines.append("")
     lines.append(
@@ -184,6 +211,10 @@ def render(analysis: Analysis, briefs: list[RiskBrief] | None = None) -> str:
     lines.append(
         f"- {summary['intel_matched']} of {summary['intel_records']} threat intel records "
         f"match this estate; {summary['intel_unmatched']} do not and were excluded from scoring"
+    )
+    lines.append(
+        f"- The MDR advisory names {summary['advisory_campaigns']} active campaigns, "
+        f"matching {summary['advisory_named_vulnerabilities']} open findings here"
     )
     bands = summary["bands"]
     lines.append(

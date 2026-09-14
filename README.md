@@ -23,17 +23,26 @@ retrieved from the real NIST SP 800-53 Rev. 5 catalogue.
 
 | | |
 |---|---|
-| **Ingests** | 60 assets, 114 vulnerabilities, 40 threat intel records, 20 business services, 30 remediation hints, and the MDR advisory |
+| **Ingests** | 60 assets, 114 vulnerabilities, 40 threat intel records, 20 business services, 30 remediation hints, and the MDR advisory. All six files are used, not just parsed |
 | **Cross-references** | the live CISA KEV catalogue (1,709 CVEs) by exact CVE id |
 | **Retrieves** | NIST SP 800-53 Rev. 5 (1,189 controls, chunked to 1,602 passages) by hybrid dense + lexical search |
 | **Produces** | a ranked top 5 with per-risk evidence, score breakdown, cited controls and caveats, as a dashboard and as Markdown |
 
-Two things it deliberately also does, because leaving them out would be a quiet lie:
+Four things it deliberately also does, because leaving them out would be a quiet lie:
 
+- **Reads the MDR advisory as evidence, not decoration.** Each campaign's exploit chain is
+  parsed for identifiers; all 10 it names are present here, matching 19 open findings, which
+  score extra and carry the analyst's own paragraph as quoted evidence. This is the only thing
+  that corroborates `CVE-SYN-2026-0011`, a synthetic identifier that can never appear in KEV
+  yet which the advisory says WinterViper is actively exploiting.
+- **Uses `remediation_guidance.csv` as a hint, exactly as the brief frames it.** It is matched
+  to 49 of 114 findings and shown as the team's operational starting point with its P0 to P2
+  triage and its closing evidence, always beside the retrieved NIST control and never instead
+  of it.
 - **Reports the 16 threat intel records that do not match this estate.** They score zero.
   They are still listed, because "we checked and it does not affect us" is a finding.
-- **Reports 6 data quality problems found during ingest** — an exposure contradiction, an
-  ownerless asset, 3 stale assets, and 59 identifiers that are not real CVEs — next to the
+- **Reports 6 data quality problems found during ingest**, an exposure contradiction, an
+  ownerless asset, 3 stale assets, and 59 identifiers that are not real CVEs, next to the
   findings they affect.
 
 ---
@@ -43,19 +52,19 @@ Two things it deliberately also does, because leaving them out would be a quiet 
 Derived, not hardcoded. Each entry turns out to be one of the five campaigns named in the
 MDR advisory, against a distinct business service:
 
-| # | Score | Risk | Business service | Confirmed in KEV |
-|---|---|---|---|---|
-| 1 | 93.6 | CitrixBleed (CVE-2023-4966) on the payment load balancer | Payment Processing | yes, ransomware |
-| 2 | 91.6 | CitrixBleed on the customer login load balancer | Customer Login | yes, ransomware |
-| 3 | 90.7 | Fortinet SSL-VPN chain (CVE-2024-21762 → CVE-2024-55591) | Remote Access | yes, ransomware |
-| 4 | 82.7 | Atlassian Jira/Confluence RCE chain | Software Delivery | yes, ransomware |
-| 5 | 77.3 | TeamCity/Jenkins auth bypass and file read | DevOps Platform | yes |
+| # | Score | Risk | Business service | In KEV | In advisory |
+|---|---|---|---|---|---|
+| 1 | 98.0 | CitrixBleed (CVE-2023-4966) on the payment load balancer | Payment Processing | yes, ransomware | yes |
+| 2 | 96.0 | CitrixBleed on the customer login load balancer | Customer Login | yes, ransomware | yes |
+| 3 | 90.7 | Fortinet SSL-VPN chain (CVE-2024-21762 then CVE-2024-55591) | Remote Access | yes, ransomware | yes |
+| 4 | 82.7 | Atlassian Jira and Confluence RCE chain | Software Delivery | yes, ransomware | yes |
+| 5 | 82.5 | TeamCity and Jenkins auth bypass and file read | DevOps Platform | yes | yes |
 
 ---
 
 ## How the ranking works
 
-Six factors, each capped, summed to a raw 114 and normalised to 0–100:
+Six factors, each capped, summed to a raw 114 and normalised to 0 to 100:
 
 | Factor | Cap | What it measures |
 |---|---:|---|
@@ -72,9 +81,26 @@ this dataset:
 
 - the highest-CVSS findings on internal development servers land at ranks **25, 26 and 73**
 - a pure-CVSS ordering would promote **V-2089 (CVSS 10.0)**, which this model scores **37.2**
-- `pearson(score, cvss) = 0.52` — correlated, because CVSS is real signal, but not governing
+- `pearson(score, cvss) = 0.52`, correlated, because CVSS is real signal, but not governing
 
 `tests/test_scoring.py` asserts each of these as a property of the output, not as a comment.
+
+### Every weight is adjustable, and any factor can be switched off
+
+The six caps above are a judgement, and a judgement a reviewer cannot inspect or change is
+indistinguishable from an arbitrary one. So all 50 numbers in the model are exposed: the six
+factor ceilings, every individual signal inside them, the blast radius amplifier, the band
+thresholds, and how many risks to report. **Tune weights** in the UI, or `POST /api/analysis`
+with a `weights` object.
+
+**Setting a factor to 0 removes it entirely.** It leaves the numerator and the denominator
+together, so the remaining factors still span 0 to 100 and two tunings stay comparable rather
+than one collapsing toward zero. Re-ranking is deterministic and needs no API key.
+
+Presets in the panel make the point quickly. "CVSS only" reproduces the naive ranking the
+brief warns against, and the difference from the default is the argument for the whole model.
+A tuned ranking is labelled as such everywhere it appears, including in the exported Markdown,
+so a custom weighting can never be mistaken for the published one.
 
 ### Grouping: why the top 5 is not simply the five highest rows
 
@@ -85,23 +111,23 @@ decision, one owner, one change window, reported four times.
 So rows are collapsed into a risk when they describe **the same campaign against the same
 business service**, and the number of distinct assets affected becomes an amplifier (+2 each,
 capped at +6) rather than a repeat. The business service is the grouping unit because it is
-what has an owner, a recovery objective and a compliance obligation — the thing a decision
+what has an owner, a recovery objective and a compliance obligation, the thing a decision
 attaches to. The full 114-row ranking is still available under **Full ranking** and `/api/risks`.
 
 ---
 
-## Supporting question 1 — the data split
+## Supporting question 1, the data split
 
 **Queried as structured records:** assets, vulnerabilities, threat intelligence, business
 services, and the CISA KEV catalogue. Each has a stable schema and an exact join key
 (`asset_id`, `cve`, `business_service`), and the ranking depends on comparing their fields
-exactly — `internet_exposed`, `edr_installed`, `cvss`, `days_open`, `knownRansomwareCampaignUse`.
+exactly, `internet_exposed`, `edr_installed`, `cvss`, `days_open`, `knownRansomwareCampaignUse`.
 Embedding any of it would replace a deterministic join with a similarity guess, and a risk
 score that cannot be traced back to a named record is not explainable, which was the point of
 the exercise.
 
 **Embedded:** only the NIST SP 800-53 prose. There is no key that joins "an internet-facing
-payment gateway with no EDR and a 180-day-old finding" to a control identifier — that mapping
+payment gateway with no EDR and a 180-day-old finding" to a control identifier, that mapping
 is genuinely semantic, and it is the one place in this system where approximate matching is
 the right tool rather than a shortcut. The 1,189 controls are chunked into 1,602 passages
 (median 670 characters, hard-capped at 1,500 so nothing is silently truncated by the
@@ -113,6 +139,29 @@ be meaningless. Lexical search is not merely a fallback: control identifiers and
 ("flaw remediation", "boundary protection", "session authenticity") are rare, precise tokens
 that BM25 weights heavily and a dense model tends to smooth over.
 
+### Why the control is retrieved and not simply asked for
+
+A language model could name a NIST control for any risk instantly, and it would usually be
+right. The brief rules that out on purpose: guidance "must come from the actual NIST document,
+not from the LLM's training data". The reason is not pedantry. A recalled control id is
+indistinguishable on the page from a retrieved one, cites nothing, and is wrong often enough
+to matter, and nobody reading the brief can tell which kind they are looking at.
+
+Retrieval and recall are not the only options, though, and the system offers the third:
+**optional model reranking, off by default**. Retrieval still decides which controls are
+admissible, and the model is only allowed to reorder that shortlist and say why the first one
+controls. It cannot add to the list; every id it returns is checked against the candidate set
+and anything invented is dropped. The worst case is a worse ordering of correct controls,
+never a fabricated one.
+
+It earns its place because similarity and applicability are different questions. Cosine
+distance matches "session token leak" to SC-23 Session Authenticity on vocabulary. Deciding
+whether SC-23 or SI-2 is the *controlling* requirement for this particular asset is a reading
+task, and a model does it better than a distance metric. Turn it on under **API keys**, and
+each risk then shows which model chose the order and its one sentence reason.
+
+### Why an exact index and not a vector database
+
 The index is a plain numpy matrix rather than Chroma, FAISS or Qdrant. At 1,602 × 384 floats
 (2.3 MB) a full exact scan is one matrix multiply well under a millisecond; an ANN index would
 add a dependency and an approximation in order to make an already-instant, already-exact
@@ -121,10 +170,10 @@ search slower and less accurate. At a hundred times this corpus size that trade 
 
 ---
 
-## Supporting question 2 — three specific ways this produces wrong output
+## Supporting question 2, three specific ways this produces wrong output
 
 **1. 59 of the 79 distinct identifiers in `vulnerabilities.csv` are not real CVE ids, so KEV
-cannot adjudicate them — and absence from KEV is not absence of exploitation.**
+cannot adjudicate them, and absence from KEV is not absence of exploitation.**
 Only 29 of 114 findings resolve against the live KEV catalogue. `CVE-SYN-2026-0011` (the API
 Admin Interface exposure that WinterViper is actively exploiting per the MDR advisory) will
 never appear in KEV, so it forfeits the 14 points a KEV listing carries and can be ranked
@@ -144,13 +193,13 @@ default but is a guess: if the vulnerability feed is right, that finding is over
 points and something genuinely exposed may be under-ranked below it.
 *What I did:* the conflict is detected at ingest, reported in **Data quality**, and attached
 as a caveat to the specific finding rather than resolved silently. *What I would add:* treat
-disagreement as a third state rather than picking a winner — rank the finding under both
+disagreement as a third state rather than picking a winner, rank the finding under both
 readings and surface the spread, so the reviewer sees the ranking is unstable there instead of
 seeing a confident number.
 
 **3. Grouping by campaign and business service can merge two things that need separate
 decisions, or split one that needs a single decision.** CVE-2023-4966 appears as risks 1 and 2
-because it hits two services with different owners — correct here, since the CFO and the Chief
+because it hits two services with different owners, correct here, since the CFO and the Chief
 Digital Officer act separately, but it spends two of five slots on one CVE. Conversely, a
 finding with no matched intel groups by `affected_component`, so two genuinely different
 weaknesses sharing a component string ("OpenSSH" covers 6 findings across 6 assets) can be
@@ -163,31 +212,37 @@ while being non-adjacent to anything in it, which would catch a merge that swall
 distinct risk.
 
 Two more the system already guards against, since they are the obvious ones:
-**the LLM citing a control it never retrieved** — `briefing/guard.py` drops any sentence
+**the LLM citing a control it never retrieved**, `briefing/guard.py` drops any sentence
 citing a NIST control outside the retrieved set or a CVE not attached to the risk, reports the
 drop, and falls back to the composed narrative if the text does not survive; and
-**threat intel that does not apply to this estate** — the 16 unmatched records contribute
+**threat intel that does not apply to this estate**, the 16 unmatched records contribute
 exactly zero and are reported separately, with region and sector relevance downweighting
 partial matches rather than counting them at full strength.
 
 ---
 
-## Supporting question 3 — the one thing I would change
+## Supporting question 3, the one thing I would change
 
-**Replace the hand-tuned factor weights with something calibrated, and show the uncertainty.**
-The six caps (30/22/20/20/12/10) are defensible and reproduce the brief's own worked example,
-but they are ultimately my judgement encoded as integers. The two highest risks sit 2.0 points
-apart, which is well inside the noise those weights carry, and the brief presents that ordering
-with a confidence the method does not earn. With another day I would (a) run a sensitivity
-analysis — perturb each weight ±25% and report how often the top 5 membership changes, which
-converts "these are the top 5" into "these 4 are stable under any reasonable weighting, and the
-fifth slot is contested between these three"; and (b) fold in EPSS exploitation probability so
-the exploitability factor rests on a published empirical estimate rather than on a binary KEV
-membership plus a feed's own boolean. That is the biggest gap because everything else in the
-system is auditable — every point traces to a named record — while the weights themselves are
-the one input nobody can check.
+**Replace the hand-tuned weights with something calibrated, and show the uncertainty.** Making
+every weight adjustable, which this now does, is only half an answer: it lets a reviewer
+explore the model but still leaves the defaults as my judgement encoded as integers. The
+sharpest evidence is in this repository's own test suite. Risks 4 and 5 sit **0.2 points
+apart**, and `test_the_briefs_own_example_holds` had to be narrowed to the brief's literal
+wording because a looser reading of it fails: CVE-2024-23897 on an internal development build
+server scores 63.9, about two points above a well patched internet facing Jira box at 62.0.
+That ordering is defensible, the dev server is KEV confirmed and named in today's advisory as
+part of a campaign explicitly targeting CI/CD, but a two point margin is well inside the noise
+those weights carry, and the brief currently presents it with a confidence the method has not
+earned.
 
----
+With another day I would, first, run a sensitivity sweep server side: perturb every weight by
+plus or minus 25 per cent a few hundred times and report how often each risk stays in the top
+5, turning "these are the top 5" into "these three are stable under any reasonable weighting,
+and the last two slots are contested between these four". Second, fold in EPSS exploitation
+probability so the exploitability factor rests on a published empirical estimate rather than on
+binary KEV membership plus a feed's own boolean. That is the biggest gap because everything
+else is auditable, every point traces to a named record, while the weights themselves remain
+the one input nobody can independently check.
 
 ## Running it locally
 
@@ -202,7 +257,7 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
 
-Open <http://127.0.0.1:8000>. That is all that is required — no API key, no `.env`, no
+Open <http://127.0.0.1:8000>. That is all that is required, no API key, no `.env`, no
 external service. The reference snapshots and the vector index are committed.
 
 To refresh the public reference documents and rebuild the index:
@@ -210,7 +265,7 @@ To refresh the public reference documents and rebuild the index:
 ```bash
 python scripts/fetch_reference_data.py   # CISA KEV + NIST SP 800-53
 python scripts/build_index.py            # re-embed the catalogue
-pytest                                   # 40 tests
+pytest                                   # 63 tests
 ```
 
 ### Optional: model-written narratives
@@ -222,7 +277,7 @@ Paste a key under **API keys** in the UI, or set one in `.env` (see `.env.exampl
 | Google Gemini | yes | `GEMINI_API_KEY` |
 | Groq | yes | `GROQ_API_KEY` |
 | OpenRouter | yes, 19 free models | `OPENROUTER_API_KEY` |
-| OmniRouter | — | `OMNIROUTER_API_KEY` |
+| OmniRouter |, | `OMNIROUTER_API_KEY` |
 | Cloudflare Workers AI | yes | `CLOUDFLARE_API_TOKEN` **and** `CLOUDFLARE_ACCOUNT_ID` |
 | OpenAI-compatible | Ollama, LM Studio, vLLM | `OPENAI_API_KEY` + `OPENAI_BASE_URL` |
 | Hugging Face | yes | `HUGGINGFACE_API_KEY` |
@@ -231,17 +286,21 @@ Paste a key under **API keys** in the UI, or set one in `.env` (see `.env.exampl
 current OpenRouter free model. Cloudflare needs both values because the account
 id is part of the request URL, so the key panel renders a second field for it.
 
-A caveat worth stating: OpenRouter's free models are individually unreliable.
-Of the eight tested against a live key, most returned a 429, a 403, or their own
-reasoning text instead of the JSON they were asked for. The picker therefore
-orders free models ahead of paid ones and defaults to `nex-agi/nex-n2.5-mini:free`,
-which was verified to return well formed JSON. When a model does fail, that risk
-falls back to its composed narrative and the UI says so rather than showing a gap.
+A caveat worth stating: OpenRouter's free models are individually unreliable. Of the eight
+tested against a live key, most returned a 429, a 403, or their own reasoning text instead of
+the JSON they were asked for. The picker therefore orders free models ahead of paid ones and
+defaults to `nex-agi/nex-n2.5-mini:free`, which was verified to return well formed JSON. When
+a model does fail, that risk falls back to its composed narrative and the UI says so rather
+than showing a gap.
+
+Providers are ordered by measured latency on this workload rather than alphabetically, so the
+fastest available one becomes the default. Cloudflare Workers AI writes all five narratives in
+about 45 seconds where the OpenRouter free models take about 105.
 
 A key pasted in the UI is held in that browser, sent as an `X-LLM-Key-<provider>` header with
 that visitor's own requests, and never stored on the server or written to a log. Provider
 adapters are process-wide singletons, so the credential lives in a `contextvar` bound per
-request — one visitor's key can never serve another's.
+request, one visitor's key can never serve another's.
 
 ---
 
@@ -249,18 +308,19 @@ request — one visitor's key can never serve another's.
 
 ```
 app/
-  ingest/      typed loaders for the 5 CSVs + advisory, and the data quality report
+  ingest/      typed loaders for the 5 CSVs, the MDR advisory parser, data quality
   reference/   CISA KEV lookup; NIST catalogue loader and chunker
   embeddings/  pluggable backends: local ONNX (default) or Gemini
   retrieval/   numpy vector store, BM25, and the RRF hybrid retriever
-  scoring/     the six-factor engine, and campaign x service grouping
-  briefing/    retrieval queries, grounding guard, narrative, Markdown report
+  scoring/     the six-factor engine, the tunable weights, campaign x service grouping
+  briefing/    retrieval queries, hint matching, grounding guard, control rerank,
+               narrative, Markdown report
   llm/         provider registry, per-request keyring, 7 adapters
   api/         FastAPI routes and the BYOK dependency
 web/           dashboard, no build step
 scripts/       fetch_reference_data.py, build_index.py
 data/          dataset, reference snapshots, committed vector index
-tests/         40 tests
+tests/         63 tests
 ```
 
 ### API
@@ -268,9 +328,12 @@ tests/         40 tests
 | Endpoint | |
 |---|---|
 | `GET /api/analysis` | full deterministic analysis, no key needed |
-| `POST /api/analysis/brief` | same, narratives rewritten by a model |
-| `GET /api/report.md` | the brief as Markdown |
+| `POST /api/analysis` | re-rank under custom `weights`, still no key needed |
+| `GET /api/weights` | the tunable model and its defaults |
+| `POST /api/analysis/brief` | narratives rewritten by a model, optional `rerank_controls` |
+| `GET` or `POST /api/report.md` | the brief as Markdown, POST accepts `weights` |
 | `GET /api/risks` | all 114 findings ranked |
+| `GET /api/advisory` | the MDR advisory as parsed, and what it matched |
 | `GET /api/intel/unmatched` | the 16 intel records that do not apply |
 | `GET /api/data-quality` | ingest problems found |
 | `GET /api/nist/search?q=` | search the NIST catalogue directly |
@@ -292,6 +355,6 @@ comfortably. The image is host-agnostic and runs unchanged anywhere Docker does.
 
 ## Sources
 
-- CISA Known Exploited Vulnerabilities catalogue — <https://github.com/cisagov/kev-data>
-- NIST SP 800-53 Rev. 5 control catalogue — <https://csrc.nist.gov/projects/risk-management/sp800-53-controls/downloads>
+- CISA Known Exploited Vulnerabilities catalogue, <https://github.com/cisagov/kev-data>
+- NIST SP 800-53 Rev. 5 control catalogue, <https://csrc.nist.gov/projects/risk-management/sp800-53-controls/downloads>
 - TawasolPay data pack and MDR advisory, as supplied with the assignment (synthetic)

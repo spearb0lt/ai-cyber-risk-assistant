@@ -22,13 +22,17 @@ from .providers import (
     OpenRouterProvider,
 )
 
-# Display order in the picker.
+# Display order in the picker, and therefore the order in which a default is
+# chosen: the first provider with a usable key wins. Ordered by measured
+# latency on this workload, not alphabetically. Cloudflare writes all five
+# narratives in about 45 seconds where the OpenRouter free models take about
+# 105, so it leads when both keys are present.
 _ORDER: tuple[type[BaseProvider], ...] = (
     GeminiProvider,
     GroqProvider,
+    CloudflareProvider,
     OpenRouterProvider,
     OmniRouterProvider,
-    CloudflareProvider,
     OpenAIProvider,
     HuggingFaceProvider,
 )

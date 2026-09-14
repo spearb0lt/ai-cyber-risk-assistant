@@ -13,6 +13,7 @@
 const KEY_STORE = "cra.keys";
 const BASE_STORE = "cra.bases";
 const ACCOUNT_STORE = "cra.accounts";
+const WEIGHT_STORE = "cra.weights";
 
 function readStored(name) {
   try {
@@ -33,6 +34,10 @@ const store = {
   bases: readStored(BASE_STORE),
   accounts: readStored(ACCOUNT_STORE),
   nist: null,
+  // Scoring weight overrides. Empty means the published default model.
+  weights: readStored(WEIGHT_STORE),
+  weightSchema: null,
+  rerank: localStorage.getItem("cra.rerank") === "1",
 };
 
 function persistKeys() {
@@ -64,6 +69,24 @@ function setAccount(slug, value) {
   if (trimmed) store.accounts[slug] = trimmed;
   else delete store.accounts[slug];
   persistKeys();
+}
+
+function persistWeights() {
+  try {
+    localStorage.setItem(WEIGHT_STORE, JSON.stringify(store.weights));
+  } catch (e) {
+    /* A tuning that cannot be saved still applies for this session. */
+  }
+}
+
+function hasCustomWeights() {
+  return Object.keys(store.weights).length > 0;
+}
+
+function weightBody(extra) {
+  const body = Object.assign({}, extra || {});
+  if (hasCustomWeights()) body.weights = store.weights;
+  return body;
 }
 
 function keyHeaders() {
@@ -194,14 +217,27 @@ function renderStats() {
 
 /* ------------------------------------------------------------- risk cards */
 
+/* Labels only. The ceilings come from the weighting the analysis was actually
+   produced under, so a tuned run shows its own caps rather than the defaults. */
 const FACTOR_META = [
-  ["exploitability", "Active exploitation", 30],
-  ["exposure", "Internet exposure", 22],
-  ["campaign", "Threat campaign", 20],
-  ["business_impact", "Business impact", 20],
-  ["missing_controls", "Missing controls", 12],
-  ["cvss", "CVSS severity", 10],
+  ["exploitability", "Active exploitation"],
+  ["exposure", "Internet exposure"],
+  ["campaign", "Threat campaign"],
+  ["business_impact", "Business impact"],
+  ["missing_controls", "Missing controls"],
+  ["cvss", "CVSS severity"],
 ];
+
+function capForAmplifier() {
+  const weights = (store.analysis && store.analysis.weights) || {};
+  return typeof weights.amplifier_cap === "number" ? weights.amplifier_cap : 6;
+}
+
+function capFor(key) {
+  const weights = (store.analysis && store.analysis.weights) || {};
+  const cap = weights["cap_" + key];
+  return typeof cap === "number" ? cap : 0;
+}
 
 function riskCard(risk) {
   const lead = risk.lead;
@@ -209,7 +245,7 @@ function riskCard(risk) {
   const assetList = risk.assets
     .map(
       (a) =>
-        `<li><strong>${esc(a.asset_name)}</strong> &mdash; ${esc(a.asset_type)}, ${esc(a.environment)}` +
+        `<li><strong>${esc(a.asset_name)}</strong>, ${esc(a.asset_type)}, ${esc(a.environment)}` +
         `${a.internet_exposed ? ", internet exposed" : ", internal"}` +
         `${a.edr_installed ? "" : ", <em>no EDR</em>"}` +
         `${a.owner_team ? `, owned by ${esc(a.owner_team)}` : ", <em>no owner</em>"}</li>`
@@ -230,7 +266,7 @@ function riskCard(risk) {
     ? risk.threat_intel
         .map(
           (t) =>
-            `<li><strong>${esc(t.threat_actor)}</strong> &mdash; "${esc(t.campaign_name)}"<br />` +
+            `<li><strong>${esc(t.threat_actor)}</strong>, campaign "${esc(t.campaign_name)}"<br />` +
             `<span style="color:var(--dim)">${esc(t.target_sector)}, ${esc(t.target_region)}. ` +
             `${esc(t.exploit_maturity)}, ${esc(t.confidence).toLowerCase()} confidence, last seen ${esc(t.active_last_seen)}` +
             `${t.ransomware_association ? ", ransomware" : ""}. Matches ${esc(t.matched_cve)}.</span></li>`
@@ -244,11 +280,14 @@ function riskCard(risk) {
       `Compliance scope ${esc(risk.compliance_scope)}. Recovery objective ${esc(risk.rto_hours)}h.</span>`
     : `<strong>${esc(risk.business_service)}</strong>`;
 
-  const factorsHtml = FACTOR_META.map(([key, label, cap]) => {
+  const factorsHtml = FACTOR_META.map(([key, label]) => {
+    const cap = capFor(key);
     const value = risk.factors[key] || 0;
-    const pct = Math.round((value / cap) * 100);
+    const pct = cap > 0 ? Math.round((value / cap) * 100) : 0;
+    const off = cap <= 0;
     return (
-      `<div class="factor"><div class="name">${esc(label)}</div>` +
+      `<div class="factor"${off ? ' style="opacity:.45"' : ""}>` +
+      `<div class="name">${esc(label)}${off ? " (off)" : ""}</div>` +
       `<div class="bar"><span style="width:${pct}%"></span></div>` +
       `<div class="num">${value.toFixed(1)}/${cap}</div></div>`
     );
@@ -256,7 +295,7 @@ function riskCard(risk) {
 
   const amplifierHtml = risk.amplifier
     ? `<div class="factor"><div class="name">Blast radius</div>` +
-      `<div class="bar"><span style="width:${Math.round((risk.amplifier / 6) * 100)}%;background:#8b5cf6"></span></div>` +
+      `<div class="bar"><span style="width:${Math.round((risk.amplifier / Math.max(capForAmplifier(), 1)) * 100)}%;background:#8b5cf6"></span></div>` +
       `<div class="num">+${risk.amplifier.toFixed(1)}</div></div>`
     : "";
 
@@ -281,6 +320,25 @@ function riskCard(risk) {
     ? `<div class="caveats"><strong>Caveats on this finding</strong><ul>` +
       risk.warnings.map((w) => `<li>${esc(w)}</li>`).join("") +
       `</ul></div>`
+    : "";
+
+  const advisoryHtml = risk.advisory
+    ? `<div class="advisory-quote">` +
+      `<div class="ah">Named in this morning's MDR advisory</div>` +
+      `<strong>${esc(risk.advisory.actor)}</strong>, campaign "${esc(risk.advisory.campaign)}". ` +
+      `${esc(risk.advisory.body)}` +
+      `<div class="chain">Exploit chain: ${esc(risk.advisory.exploit_chain)}<br />` +
+      `Ransomware: ${esc(risk.advisory.ransomware || "not stated")}</div></div>`
+    : "";
+
+  const hintHtml = risk.hint
+    ? `<div class="hint-box">` +
+      `<div class="hh">Security team's own note <span class="prio">${esc(risk.hint.priority_hint)}</span></div>` +
+      `<strong>${esc(risk.hint.finding_type)}</strong>` +
+      `<p>${esc(risk.hint.recommended_action)}</p>` +
+      `<div class="ev">Evidence expected at closure: ${esc(risk.hint.validation_evidence)}</div>` +
+      `<div class="ev">From remediation_guidance.csv, a starting point rather than the authority. ` +
+      `The controlling requirement is the NIST control above.</div></div>`
     : "";
 
   const narrativeTag =
@@ -310,12 +368,21 @@ function riskCard(risk) {
     `<div class="fact"><div class="label">Matched threat intel</div><div class="value"><ul>${intelHtml}</ul></div></div>` +
     `<div class="fact"><div class="label">Business service at risk</div><div class="value">${serviceHtml}</div></div>` +
     `</div>` +
+    advisoryHtml +
     `<div class="why"><div class="label">Why this ranks here ${narrativeTag}</div>${esc(risk.narrative.why)}</div>` +
     `<h4 class="section">Score breakdown</h4>` +
     `<div class="factors">${factorsHtml}${amplifierHtml}</div>` +
-    `<h4 class="section">Remediation guidance, retrieved from NIST SP 800-53 Rev. 5</h4>` +
+    `<h4 class="section">Remediation guidance, retrieved from NIST SP 800-53 Rev. 5` +
+    (risk.control_selection && risk.control_selection.used_model
+      ? ` &middot; <span style="text-transform:none;letter-spacing:0;color:var(--accent)">order chosen by ${esc(risk.control_selection.model)}</span>`
+      : ``) +
+    `</h4>` +
+    (risk.control_selection && risk.control_selection.reason
+      ? `<p class="note" style="margin-bottom:9px">${esc(risk.control_selection.reason)}</p>`
+      : ``) +
     controlsHtml +
     `<p style="font-size:13.5px;color:#c4cfdd">${esc(risk.narrative.remediation)}</p>` +
+    hintHtml +
     caveatsHtml +
     `</div>`;
   return card;
@@ -325,6 +392,29 @@ function riskCard(risk) {
 
 function viewRisks() {
   const wrap = el("div");
+
+  if (store.analysis.weights_are_default === false) {
+    const changed = store.analysis.weights_changed || {};
+    const parts = Object.keys(changed)
+      .map((k) => `${k.replace(/^cap_/, "")} ${changed[k].default} to ${changed[k].current}`)
+      .slice(0, 6);
+    const note = el("div", { class: "tuned-note" });
+    const text = el("span");
+    text.innerHTML =
+      `<strong>Custom weighting in use.</strong> ` +
+      esc(parts.join("; ")) +
+      (Object.keys(changed).length > 6 ? ", and more" : "") +
+      `. This is not the published default model.`;
+    const undo = el("button", { type: "button", text: "Reset to default" });
+    undo.addEventListener("click", async () => {
+      store.weights = {};
+      persistWeights();
+      await applyWeights();
+    });
+    note.appendChild(text);
+    note.appendChild(undo);
+    wrap.appendChild(note);
+  }
   const note = el("p", { class: "note" });
   const src = store.analysis.narrative_source || "deterministic";
   note.innerHTML =
@@ -542,12 +632,12 @@ function viewMethod() {
     <h3>The scoring model</h3>
     <p>Six factors, each capped, summed and normalised to 0 to 100:</p>
     <ul>
-      <li><strong>Active exploitation (30)</strong> &mdash; presence in CISA KEV, known ransomware use, public exploit, intel exploit maturity.</li>
-      <li><strong>Internet exposure (22)</strong> &mdash; reachability, and whether exploitation needs credentials.</li>
-      <li><strong>Threat campaign match (20)</strong> &mdash; a named actor targeting this sector and region, weighted down when the target profile only partly matches.</li>
-      <li><strong>Business impact (20)</strong> &mdash; revenue, customer exposure, compliance scope, recovery objective, and how many other services depend on this one.</li>
-      <li><strong>Missing controls (12)</strong> &mdash; no EDR, no patch, age of the finding, stale inventory, no assigned owner.</li>
-      <li><strong>CVSS (10)</strong> &mdash; technical severity, deliberately capped at under 9% of the raw total.</li>
+      <li><strong>Active exploitation (30)</strong> - presence in CISA KEV, known ransomware use, public exploit, intel exploit maturity.</li>
+      <li><strong>Internet exposure (22)</strong> - reachability, and whether exploitation needs credentials.</li>
+      <li><strong>Threat campaign match (20)</strong> - a named actor targeting this sector and region, weighted down when the target profile only partly matches.</li>
+      <li><strong>Business impact (20)</strong> - revenue, customer exposure, compliance scope, recovery objective, and how many other services depend on this one.</li>
+      <li><strong>Missing controls (12)</strong> - no EDR, no patch, age of the finding, stale inventory, no assigned owner.</li>
+      <li><strong>CVSS (10)</strong> - technical severity, deliberately capped at under 9% of the raw total.</li>
     </ul>
     <p>
       That cap is the point. The brief requires a CVSS 10 on an internal development box to rank
@@ -560,11 +650,50 @@ function viewMethod() {
   return wrap;
 }
 
+function viewAdvisory() {
+  const adv = store.analysis.advisory || { campaigns: [] };
+  const wrap = el("div");
+  wrap.appendChild(
+    el("p", {
+      class: "note",
+      html:
+        `The MDR advisory is ingested, not just stored. Each campaign's exploit chain ` +
+        `is parsed for identifiers, and a finding whose identifier appears here scores ` +
+        `additional campaign points and carries the analyst's own paragraph as evidence. ` +
+        `That matters most for the pack's synthetic identifiers: ` +
+        `<code>CVE-SYN-2026-0011</code> can never appear in CISA KEV, so without the ` +
+        `advisory there would be nothing to confirm WinterViper is actively exploiting it.`,
+    })
+  );
+  adv.campaigns.forEach((c) => {
+    const inEstate = (c.identifiers || []).filter((i) =>
+      (store.analysis.ranked || []).some((r) => r.cve === i)
+    );
+    const card = el("div", { class: "control" });
+    card.innerHTML =
+      `<div><span class="cname">${esc(c.actor)}</span>, campaign "${esc(c.campaign)}"</div>` +
+      `<div class="cmeta">${esc(c.target_profile)}</div>` +
+      `<blockquote>${esc(c.body)}</blockquote>` +
+      `<div class="cmeta" style="margin-top:8px">` +
+      `Exploit chain: <span style="font-family:var(--mono)">${esc(c.exploit_chain)}</span><br />` +
+      `Ransomware: ${esc(c.ransomware || "not stated")}<br />` +
+      `Confidence: ${esc(c.confidence || "not stated")}<br />` +
+      `Identifiers present in this estate: ` +
+      (inEstate.length
+        ? `<strong style="color:var(--critical)">${esc(inEstate.join(", "))}</strong>`
+        : `none`) +
+      `</div>`;
+    wrap.appendChild(card);
+  });
+  return wrap;
+}
+
 const VIEWS = {
   risks: viewRisks,
   ranking: viewRanking,
   intel: viewIntel,
   quality: viewQuality,
+  advisory: viewAdvisory,
   nist: viewNist,
   method: viewMethod,
 };
@@ -580,6 +709,162 @@ function render() {
   document.querySelectorAll(".tab").forEach((tab) => {
     tab.classList.toggle("active", tab.dataset.view === store.view);
   });
+}
+
+
+/* ----------------------------------------------------------- tuning panel */
+
+/* Presets are shortcuts to a point of view, not new logic. Each one is just a
+   set of weight overrides, and every one is reachable by moving sliders. */
+const PRESETS = {
+  "Published default": {},
+  "Ignore CVSS entirely": { cap_cvss: 0 },
+  "CVSS only": {
+    cap_exploitability: 0,
+    cap_exposure: 0,
+    cap_campaign: 0,
+    cap_business_impact: 0,
+    cap_missing_controls: 0,
+  },
+  "Business impact first": { cap_business_impact: 40, cap_cvss: 4 },
+  "Active exploitation first": { cap_exploitability: 45, cap_campaign: 28, cap_cvss: 4 },
+  "One per asset, top 10": { top_n: 10, max_risks_per_service: 3 },
+};
+
+function weightValue(field) {
+  if (Object.prototype.hasOwnProperty.call(store.weights, field)) return store.weights[field];
+  return store.weightSchema.defaults[field];
+}
+
+function tuneRow(field, label, sublabel, max) {
+  const def = store.weightSchema.defaults[field];
+  const value = weightValue(field);
+  const row = el("div", { class: "tune-row" + (Number(value) === 0 ? " off" : "") });
+
+  const title = el("div", { class: "tl" });
+  title.innerHTML = esc(label) + (sublabel ? `<small>${esc(sublabel)}</small>` : "");
+
+  const slider = el("input", {
+    type: "range",
+    min: "0",
+    max: String(max),
+    step: max <= 25 ? "1" : "1",
+    value: String(value),
+  });
+  const out = el("output", {
+    class: Number(value) !== Number(def) ? "changed" : "",
+    text: String(value),
+  });
+
+  slider.addEventListener("input", () => {
+    const next = Number(slider.value);
+    out.textContent = String(next);
+    out.className = next !== Number(def) ? "changed" : "";
+    row.classList.toggle("off", next === 0);
+    if (next === Number(def)) delete store.weights[field];
+    else store.weights[field] = next;
+  });
+
+  row.appendChild(title);
+  row.appendChild(slider);
+  row.appendChild(out);
+  return row;
+}
+
+function openTuningPanel() {
+  const schema = store.weightSchema;
+  const body = el("div");
+
+  body.appendChild(
+    el("div", {
+      class: "tune-intro",
+      html:
+        `Every number in the ranking is on this panel. <strong>Setting a factor to 0 ` +
+        `removes it entirely</strong>: it leaves both the score and the total it is ` +
+        `measured against, so the remaining factors still span 0 to 100 and the ` +
+        `results stay comparable.<br /><br />` +
+        `Re-ranking is deterministic and needs no API key.`,
+    })
+  );
+
+  const presets = el("div", { class: "preset-row" });
+  Object.keys(PRESETS).forEach((name) => {
+    const button = el("button", { class: "preset", type: "button", text: name });
+    button.addEventListener("click", async () => {
+      store.weights = Object.assign({}, PRESETS[name]);
+      persistWeights();
+      closeModal();
+      await applyWeights();
+    });
+    presets.appendChild(button);
+  });
+  body.appendChild(el("h4", { class: "section", text: "Presets" }));
+  body.appendChild(presets);
+
+  body.appendChild(el("h4", { class: "section", text: "Factor ceilings" }));
+  schema.factors.forEach((factor) => {
+    const wrap = el("div", { class: "tune-factor" });
+    wrap.appendChild(
+      tuneRow(factor.cap_field, factor.label, `default ${factor.cap_default}`, 50)
+    );
+    if (factor.signals.length) {
+      const details = el("details", { class: "tune-signals" });
+      details.appendChild(
+        el("summary", { text: `Individual signals inside ${factor.label.toLowerCase()}` })
+      );
+      factor.signals.forEach((sig) => {
+        details.appendChild(tuneRow(sig.field, sig.label, "", 20));
+      });
+      wrap.appendChild(details);
+    }
+    body.appendChild(wrap);
+  });
+
+  body.appendChild(el("h4", { class: "section", text: "Grouping and output" }));
+  schema.grouping.forEach((g) => body.appendChild(tuneRow(g.field, g.label, "", 15)));
+  schema.output.forEach((o) =>
+    body.appendChild(tuneRow(o.field, o.label, "", o.field === "top_n" ? 25 : 10))
+  );
+
+  body.appendChild(el("h4", { class: "section", text: "Band thresholds" }));
+  schema.bands.forEach((b) => body.appendChild(tuneRow(b.field, b.label, "", 100)));
+
+  const apply = el("button", { class: "btn primary", type: "button", text: "Apply and re-rank" });
+  const reset = el("button", { class: "btn ghost", type: "button", text: "Reset to default" });
+  apply.addEventListener("click", async () => {
+    persistWeights();
+    closeModal();
+    await applyWeights();
+  });
+  reset.addEventListener("click", async () => {
+    store.weights = {};
+    persistWeights();
+    closeModal();
+    await applyWeights();
+  });
+  const actions = el("div", { class: "tune-actions" }, [apply, reset]);
+  body.appendChild(actions);
+
+  showModal("Tune the scoring model", body);
+}
+
+async function applyWeights() {
+  const button = $("#tuneBtn");
+  button.disabled = true;
+  button.textContent = "Re-ranking...";
+  try {
+    await loadAnalysis();
+    toast(
+      "ok",
+      hasCustomWeights() ? "Re-ranked with your weights" : "Back to the default model",
+      hasCustomWeights() ? `${Object.keys(store.weights).length} value(s) changed.` : ""
+    );
+  } catch (err) {
+    toast("error", err.message, err.hint || "");
+  } finally {
+    button.disabled = false;
+    button.textContent = "Tune weights";
+  }
 }
 
 /* ------------------------------------------------------------ key manager */
@@ -719,6 +1004,25 @@ function openKeyManager() {
         `requests only, and never stored on the server or written to a log.`,
     })
   );
+  const toggle = el("div", { class: "toggle-row" });
+  const box = el("input", { type: "checkbox", id: "rerankToggle" });
+  box.checked = store.rerank;
+  box.addEventListener("change", () => {
+    store.rerank = box.checked;
+    localStorage.setItem("cra.rerank", box.checked ? "1" : "0");
+  });
+  const label = el("label", { for: "rerankToggle" });
+  label.innerHTML =
+    `Let the model reorder the retrieved NIST controls` +
+    `<small>Retrieval still decides which controls are admissible. The model only ` +
+    `ranks that shortlist by applicability and cannot introduce one of its own, so ` +
+    `the guidance still comes from the document.</small>`;
+  toggle.appendChild(box);
+  toggle.appendChild(label);
+  body.appendChild(el("h4", { class: "section", text: "Control selection" }));
+  body.appendChild(toggle);
+
+  body.appendChild(el("h4", { class: "section", text: "Providers" }));
   (store.config.providers || []).forEach((p) => body.appendChild(keyRow(p)));
   const clear = el("button", { class: "btn ghost", type: "button", text: "Remove all keys" });
   clear.addEventListener("click", async () => {
@@ -789,7 +1093,11 @@ async function refreshConfig() {
 }
 
 async function loadAnalysis() {
-  store.analysis = await api("/analysis");
+  /* A custom weighting needs the POST form, because the ranking has to be
+     re-derived rather than read from the default cache. */
+  store.analysis = hasCustomWeights()
+    ? await api("/analysis", { json: weightBody() })
+    : await api("/analysis");
   renderStats();
   renderBanner();
   render();
@@ -806,7 +1114,11 @@ async function generateWithAi() {
   button.textContent = "Generating...";
   try {
     const data = await api("/analysis/brief", {
-      json: { provider: store.provider || null, model: store.model || null },
+      json: weightBody({
+        provider: store.provider || null,
+        model: store.model || null,
+        rerank_controls: store.rerank,
+      }),
     });
     store.analysis = data;
     renderStats();
@@ -829,7 +1141,9 @@ async function downloadBrief() {
   const button = $("#downloadBtn");
   button.disabled = true;
   try {
-    const markdown = await api("/report.md");
+    const markdown = hasCustomWeights()
+      ? await api("/report.md", { json: weightBody() })
+      : await api("/report.md");
     const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const link = el("a", { href: url, download: "tawasolpay-cyber-risk-brief.md" });
@@ -852,6 +1166,13 @@ document.querySelectorAll(".tab").forEach((tab) => {
 });
 
 $("#keysBtn").addEventListener("click", openKeyManager);
+$("#tuneBtn").addEventListener("click", () => {
+  if (!store.weightSchema) {
+    toast("warn", "Tuning model still loading", "Try again in a moment.");
+    return;
+  }
+  openTuningPanel();
+});
 $("#briefBtn").addEventListener("click", generateWithAi);
 $("#downloadBtn").addEventListener("click", downloadBrief);
 $("#modalClose").addEventListener("click", closeModal);
@@ -865,6 +1186,7 @@ document.addEventListener("keydown", (e) => {
 (async function boot() {
   try {
     await refreshConfig();
+    store.weightSchema = await api("/weights");
     $("#appName").textContent = store.config.app_name;
     $("#appTagline").textContent = store.config.tagline;
     document.title = store.config.app_name;

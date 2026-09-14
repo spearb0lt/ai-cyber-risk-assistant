@@ -17,6 +17,8 @@ from ..briefing import report as report_module
 from ..ingest import quality
 from ..llm import LLMError
 from ..retrieval.hybrid import get_retriever
+from ..scoring import weights as weights_module
+from ..scoring.weights import Weights
 from .byok import bind_client_keys
 
 router = APIRouter(dependencies=[Depends(bind_client_keys)])
@@ -33,6 +35,19 @@ class VerifyRequest(BaseModel):
 class BriefRequest(BaseModel):
     provider: str | None = None
     model: str | None = None
+    # Any subset of the weight fields. Typed loosely on purpose: unknown keys
+    # and unusable values are dropped by Weights.from_dict rather than
+    # rejected, so a stale client cannot be broken by a field it does not
+    # know about. Declaring dict[str, float] here would make pydantic return
+    # a 422 before that sanitising ever ran.
+    weights: dict[str, Any] | None = None
+    # Reorder the retrieved controls with a model. Retrieval still decides
+    # which controls are admissible; this only changes their order.
+    rerank_controls: bool = False
+
+
+class AnalysisRequest(BaseModel):
+    weights: dict[str, Any] | None = None
 
 
 @router.get("/health")
@@ -101,17 +116,37 @@ def providers_verify(payload: VerifyRequest) -> dict[str, Any]:
 
 @router.get("/analysis")
 def get_analysis() -> dict[str, Any]:
-    """The full deterministic analysis. Needs no API key."""
+    """The full deterministic analysis at the default weighting. No key needed."""
     return analysis_module.analyse().as_dict()
+
+
+@router.get("/weights")
+def get_weights() -> dict[str, Any]:
+    """The tunable scoring model, and what the UI needs to render it."""
+    return weights_module.schema()
+
+
+@router.post("/analysis")
+def post_analysis(payload: AnalysisRequest) -> dict[str, Any]:
+    """Re-derive the whole ranking under a different weighting.
+
+    Deterministic and free: no model is involved, so a reviewer can explore
+    how sensitive the top 5 is to the weights without any credential.
+    """
+    custom = Weights.from_dict(payload.weights)
+    return analysis_module.analyse(weights=custom).as_dict()
 
 
 @router.post("/analysis/brief")
 def post_brief(payload: BriefRequest) -> dict[str, Any]:
     """Rewrite the narratives with a language model, using this caller's key."""
-    current = analysis_module.analyse()
+    current = analysis_module.analyse(weights=Weights.from_dict(payload.weights))
     try:
         briefs = analysis_module.enrich(
-            current, provider_id=payload.provider, model=payload.model
+            current,
+            provider_id=payload.provider,
+            model=payload.model,
+            rerank_controls=payload.rerank_controls,
         )
     except LLMError as exc:
         raise _fail(exc) from exc
@@ -125,6 +160,11 @@ def post_brief(payload: BriefRequest) -> dict[str, Any]:
     result["narrative_source"] = (
         "model" if any(b.narrative.source == "model" for b in briefs) else "deterministic"
     )
+    result["control_selection"] = (
+        "model_reranked"
+        if any(b.rerank and b.rerank.used_model for b in briefs)
+        else "similarity"
+    )
     return result
 
 
@@ -136,14 +176,27 @@ def get_report() -> str:
 
 @router.post("/report.md", response_class=PlainTextResponse)
 def post_report(payload: BriefRequest) -> str:
-    """The Markdown brief with model written narratives."""
-    current = analysis_module.analyse()
+    """The Markdown brief under a given weighting, with model prose if possible.
+
+    The weighting is the reason to POST here; model narratives are a bonus. So
+    a caller with no provider still gets their tuned brief, composed from the
+    evidence, rather than an error. Only /analysis/brief, where the caller
+    explicitly asked for a model, fails loudly when there is none.
+    """
+    current = analysis_module.analyse(weights=Weights.from_dict(payload.weights))
+    if not llm.any_available():
+        return report_module.render(current)
     try:
         briefs = analysis_module.enrich(
-            current, provider_id=payload.provider, model=payload.model
+            current,
+            provider_id=payload.provider,
+            model=payload.model,
+            rerank_controls=payload.rerank_controls,
         )
-    except LLMError as exc:
-        raise _fail(exc) from exc
+    except LLMError:
+        # A provider existed but would not answer. The brief still stands on
+        # its deterministic narratives, which is better than no brief at all.
+        return report_module.render(current)
     return report_module.render(current, briefs)
 
 
@@ -168,6 +221,21 @@ def unmatched_intel() -> dict[str, Any]:
             "the current inventory. They contributed nothing to any risk score."
         ),
     }
+
+
+@router.get("/advisory")
+def advisory() -> dict[str, Any]:
+    """The MDR advisory as parsed, showing what was extracted from it."""
+    current = analysis_module.analyse()
+    payload = current.advisory.as_dict()
+    present = {(v.cve or "").upper() for v in current.pack.vulnerabilities}
+    payload["identifiers_in_estate"] = sorted(
+        i for i in current.advisory.by_identifier if i in present
+    )
+    payload["identifiers_not_in_estate"] = sorted(
+        i for i in current.advisory.by_identifier if i not in present
+    )
+    return payload
 
 
 @router.get("/data-quality")

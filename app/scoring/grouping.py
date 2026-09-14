@@ -16,14 +16,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from .. import settings
+from ..ingest.advisory import AdvisoryCampaign
 from ..ingest.loaders import Asset, ThreatIntel
-from .engine import BANDS, ScoredRisk
-
-# Each additional affected asset adds this much, capped. Widening blast radius
-# raises urgency, but two vulnerable appliances is not twice the risk of one.
-ASSET_AMPLIFIER = 2.0
-MAX_AMPLIFIER = 6.0
+from .engine import ScoredRisk
+from .weights import DEFAULTS, Weights
 
 
 @dataclass
@@ -34,6 +30,7 @@ class RiskGroup:
     score: float
     amplifier: float
     rank: int = 0
+    weights: Weights = DEFAULTS
     # populated later by the briefing layer
     narrative: str = ""
     controls: list[Any] = field(default_factory=list)
@@ -47,10 +44,15 @@ class RiskGroup:
 
     @property
     def band(self) -> str:
-        for threshold, name in BANDS:
-            if self.score >= threshold:
-                return name
-        return "Low"
+        return self.weights.band_for(self.score)
+
+    @property
+    def advisory(self) -> AdvisoryCampaign | None:
+        """The MDR advisory campaign this risk belongs to, if any."""
+        for member in self.members:
+            if member.advisory:
+                return member.advisory
+        return None
 
     @property
     def service_name(self) -> str:
@@ -176,6 +178,7 @@ class RiskGroup:
             "warnings": self.warnings,
             "narrative": self.narrative,
             "controls": self.controls,
+            "advisory": self.advisory.as_dict() if self.advisory else None,
         }
 
 
@@ -192,7 +195,7 @@ def _group_key(risk: ScoredRisk) -> tuple[str, str]:
     return (service, f"component:{risk.vulnerability.affected_component}")
 
 
-def group(scored: list[ScoredRisk]) -> list[RiskGroup]:
+def group(scored: list[ScoredRisk], weights: Weights = DEFAULTS) -> list[RiskGroup]:
     """Collapse scored rows into risks, highest first."""
     buckets: dict[tuple[str, str], list[ScoredRisk]] = {}
     for risk in scored:
@@ -203,7 +206,9 @@ def group(scored: list[ScoredRisk]) -> list[RiskGroup]:
         # `scored` arrives sorted, so the first member is the lead.
         lead = members[0]
         distinct_assets = len({m.asset.asset_id for m in members})
-        amplifier = min(ASSET_AMPLIFIER * (distinct_assets - 1), MAX_AMPLIFIER)
+        amplifier = min(
+            weights.asset_amplifier * (distinct_assets - 1), weights.amplifier_cap
+        )
         groups.append(
             RiskGroup(
                 key=key,
@@ -211,6 +216,7 @@ def group(scored: list[ScoredRisk]) -> list[RiskGroup]:
                 members=members,
                 score=min(lead.score + amplifier, 100.0),
                 amplifier=amplifier,
+                weights=weights,
             )
         )
 
@@ -222,6 +228,7 @@ def top_risks(
     groups: list[RiskGroup],
     limit: int | None = None,
     max_per_service: int | None = None,
+    weights: Weights = DEFAULTS,
 ) -> list[RiskGroup]:
     """The highest risks, with a cap on how many may share a business service.
 
@@ -229,9 +236,9 @@ def top_risks(
     configurable because the right answer depends on the audience: a board
     wants breadth, the team that owns one service wants depth.
     """
-    limit = settings.TOP_N if limit is None else limit
+    limit = int(weights.top_n) if limit is None else limit
     max_per_service = (
-        settings.MAX_RISKS_PER_SERVICE if max_per_service is None else max_per_service
+        int(weights.max_risks_per_service) if max_per_service is None else max_per_service
     )
 
     chosen: list[RiskGroup] = []

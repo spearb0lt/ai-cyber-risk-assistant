@@ -247,3 +247,171 @@ def test_brief_endpoint_fails_clearly_with_no_provider(client):
     error = response.json()["detail"]["error"]
     assert "provider" in error["message"].lower()
     assert error["hint"]
+
+
+# ------------------------------------------------------- remediation hints
+
+
+def test_hint_matches_the_right_finding():
+    from app.ingest.loaders import load_pack
+    from app.briefing.hints import match
+
+    pack = load_pack()
+    result = analyse()
+    lead = result.briefs[0].risk.lead
+    hit = match(lead, pack)
+    assert hit is not None
+    assert "Citrix" in hit.hint.finding_type
+    assert hit.hint.priority_hint.startswith("P")
+
+
+def test_hint_refuses_a_wrong_product():
+    """TeamCity must not match "VPN Authentication Bypass".
+
+    Two of that hint's three tokens are generic attack vocabulary, so overlap
+    alone scores it 0.67. Showing a VPN credential rotation procedure against a
+    build server is the kind of confident wrong answer worth engineering out.
+    """
+    from app.ingest.loaders import load_pack
+    from app.briefing.hints import match
+
+    pack = load_pack()
+    result = analyse()
+    teamcity = [
+        r
+        for r in result.all_scored
+        if "TeamCity" in r.vulnerability.vulnerability_name
+    ]
+    assert teamcity
+    for risk in teamcity:
+        hit = match(risk, pack)
+        assert hit is None or "VPN" not in hit.hint.finding_type
+
+
+def test_hint_uses_asset_context_not_only_the_cve_title():
+    """Jenkins on a Build Server should reach "Build Server Arbitrary File Read",
+    even though the vulnerability title never says "build"."""
+    from app.ingest.loaders import load_pack
+    from app.briefing.hints import match
+
+    pack = load_pack()
+    result = analyse()
+    jenkins = [
+        r for r in result.all_scored if "Jenkins" in r.vulnerability.vulnerability_name
+    ]
+    assert jenkins
+    hit = match(jenkins[0], pack)
+    assert hit is not None and "Build Server" in hit.hint.finding_type
+
+
+def test_hint_never_replaces_the_nist_control():
+    """The brief calls the CSV a hint, not the answer, so the control leads."""
+    result = analyse()
+    for brief in result.briefs:
+        if brief.hint:
+            assert brief.controls, "a hint was shown with no retrieved control"
+            assert brief.controls[0].identifier in brief.narrative.remediation
+
+
+# ----------------------------------------------------------- control rerank
+
+
+def test_rerank_cannot_introduce_a_control(monkeypatch):
+    """A model naming a control outside the shortlist must be ignored."""
+    from app.briefing import rerank as rerank_module
+
+    result = analyse()
+    brief = result.briefs[0]
+    controls = brief.controls
+    assert len(controls) >= 2
+
+    class FakeSelection:
+        class provider:
+            id = "fake"
+
+        model = "fake-model"
+
+    def fake_generate(*args, **kwargs):
+        # Position 99 does not exist; 1 does.
+        return '{"order": [99, 1], "reason": "test"}', FakeSelection()
+
+    monkeypatch.setattr(rerank_module, "generate", fake_generate)
+    outcome = rerank_module.rerank(brief.risk, controls)
+
+    returned = {c.identifier for c in outcome.controls}
+    allowed = {c.identifier for c in controls}
+    assert returned == allowed, "rerank changed the candidate set"
+    assert "99" in outcome.dropped
+
+
+def test_rerank_falls_back_when_the_model_fails(monkeypatch):
+    from app.briefing import rerank as rerank_module
+    from app.llm import LLMError
+
+    result = analyse()
+    brief = result.briefs[0]
+
+    def boom(*args, **kwargs):
+        raise LLMError("provider exploded")
+
+    monkeypatch.setattr(rerank_module, "generate", boom)
+    outcome = rerank_module.rerank(brief.risk, brief.controls)
+    assert outcome.used_model is False
+    assert outcome.controls == brief.controls
+    assert "exploded" in outcome.error
+
+
+# ------------------------------------------------------------ new endpoints
+
+
+def test_weights_endpoint_describes_the_whole_model(client):
+    payload = client.get("/api/weights").json()
+    ids = [f["id"] for f in payload["factors"]]
+    assert ids == [
+        "exploitability",
+        "exposure",
+        "campaign",
+        "business_impact",
+        "missing_controls",
+        "cvss",
+    ]
+    # CVSS is read off the score rather than assembled, so it has no signals.
+    cvss = next(f for f in payload["factors"] if f["id"] == "cvss")
+    assert cvss["signals"] == []
+    assert len(payload["defaults"]) > 40
+
+
+def test_posting_weights_rescores_without_any_key(client):
+    default = client.get("/api/analysis").json()
+    tuned = client.post("/api/analysis", json={"weights": {"cap_cvss": 0}}).json()
+    assert tuned["weights_are_default"] is False
+    assert tuned["weights_changed"]["cap_cvss"]["current"] == 0
+    for risk in tuned["risks"]:
+        assert risk["factors"]["cvss"] == 0
+    assert [r["title"] for r in tuned["risks"]] != [] 
+    assert default["weights_are_default"] is True
+
+
+def test_bad_weights_are_ignored_not_rejected(client):
+    response = client.post(
+        "/api/analysis",
+        json={"weights": {"cap_exposure": "abc", "unknown": 1, "cap_cvss": 10**9}},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["weights"]["cap_exposure"] == 22.0
+    assert payload["weights"]["cap_cvss"] == 100.0
+
+
+def test_advisory_endpoint(client):
+    payload = client.get("/api/advisory").json()
+    assert len(payload["campaigns"]) == 5
+    assert len(payload["identifiers_in_estate"]) == 10
+    assert payload["identifiers_not_in_estate"] == []
+    assert "CVE-SYN-2026-0011" in payload["identifiers_in_estate"]
+
+
+def test_report_states_a_custom_weighting(client):
+    text = client.post("/api/report.md", json={"weights": {"cap_cvss": 0}}).text
+    # The brief must never silently present a tuned ranking as the default.
+    assert "custom weighting" in text.lower()

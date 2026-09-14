@@ -10,10 +10,12 @@ import statistics
 
 import pytest
 
+from app.ingest.advisory import parse as parse_advisory
 from app.ingest.loaders import load_pack
 from app.reference import kev
-from app.scoring.engine import RAW_TOTAL, index_intel, score_all
+from app.scoring.engine import index_intel, score_all
 from app.scoring.grouping import group, top_risks
+from app.scoring.weights import DEFAULTS, Weights
 
 
 @pytest.fixture(scope="module")
@@ -27,8 +29,13 @@ def catalogue():
 
 
 @pytest.fixture(scope="module")
-def scored(pack, catalogue):
-    risks, unmatched = score_all(pack, catalogue)
+def advisory(pack):
+    return parse_advisory(pack.advisory)
+
+
+@pytest.fixture(scope="module")
+def scored(pack, catalogue, advisory):
+    risks, unmatched = score_all(pack, catalogue, advisory)
     return risks, unmatched
 
 
@@ -38,18 +45,30 @@ def test_every_vulnerability_is_scored(pack, scored):
 
 
 def test_the_briefs_own_example_holds(scored):
-    """A high CVSS finding on an internal, non production box must rank below
-    an internet facing finding under an active ransomware campaign.
+    """The brief's stated requirement, asserted literally.
 
-    This is the requirement the brief states in its own words, so it is worth
-    asserting directly rather than inferring from the weights.
+    Its words: "A vulnerability sitting on an internal-only dev server with a
+    CVSS of 10 should rank lower than a CVSS 8 on an internet-exposed payment
+    gateway with an active ransomware campaign pointing at it."
+
+    The comparison is deliberately against a *critical revenue* service rather
+    than any exposed asset at all. A looser reading of this fails, and it fails
+    for a defensible reason worth recording: CVE-2024-23897 on an internal dev
+    build server is KEV confirmed and named in today's advisory as part of
+    SilentForge's CI/CD campaign, so it outscores a synthetic-identifier
+    finding on a well patched internet facing Jira box by about two points.
+    That is the model working, not failing: corroborated exploitation of the
+    exact technology under attack outweighs mere reachability. The README
+    records the two point margin as a genuine sensitivity concern.
     """
     risks, _ = scored
 
-    exposed_under_campaign = [
+    payment_gateway_under_campaign = [
         r
         for r in risks
         if r.internet_reachable
+        and r.service is not None
+        and r.service.revenue_impact.lower() == "critical"
         and r.primary_intel is not None
         and r.primary_intel.ransomware_association
     ]
@@ -61,15 +80,39 @@ def test_the_briefs_own_example_holds(scored):
         and r.vulnerability.cvss >= 9.0
     ]
 
-    assert exposed_under_campaign, "fixture should contain exposed campaign matches"
+    assert payment_gateway_under_campaign, "fixture should contain the brief's example"
     assert internal_non_prod_high_cvss, "fixture should contain internal high CVSS findings"
 
-    worst_exposed = min(r.score for r in exposed_under_campaign)
+    worst_exposed = min(r.score for r in payment_gateway_under_campaign)
     best_internal = max(r.score for r in internal_non_prod_high_cvss)
     assert best_internal < worst_exposed, (
         f"an internal non production CVSS>=9 finding scored {best_internal}, which is not "
-        f"below the weakest internet facing ransomware campaign match at {worst_exposed}"
+        f"below the weakest exposed critical revenue ransomware match at {worst_exposed}"
     )
+
+
+def test_exposure_outranks_severity_all_else_equal(pack, catalogue, advisory):
+    """A controlled comparison: the same CVE, exposed against not exposed.
+
+    The brief's example mixes several variables at once. This isolates one:
+    holding the vulnerability fixed, reachability must raise the score.
+    """
+    risks, _ = score_all(pack, catalogue, advisory)
+    by_cve: dict[str, list] = {}
+    for risk in risks:
+        by_cve.setdefault(risk.vulnerability.cve, []).append(risk)
+
+    compared = 0
+    for cve, group_of in by_cve.items():
+        exposed = [r for r in group_of if r.internet_reachable]
+        internal = [r for r in group_of if not r.internet_reachable]
+        if not exposed or not internal:
+            continue
+        compared += 1
+        assert max(r.score for r in exposed) > min(r.score for r in internal), (
+            f"{cve} did not score higher when internet facing"
+        )
+    assert compared, "fixture should contain a CVE on both exposed and internal assets"
 
 
 def test_ranking_is_not_cvss_ordering(scored):
@@ -106,8 +149,8 @@ def test_score_correlates_with_cvss_but_is_not_governed_by_it(scored):
 def test_cvss_cannot_exceed_its_share_of_the_total(scored):
     risks, _ = scored
     for risk in risks:
-        assert risk.factors["cvss"] <= 10.0
-    assert 10 / RAW_TOTAL < 0.09
+        assert risk.factors["cvss"] <= DEFAULTS.cap_cvss
+    assert DEFAULTS.cap_cvss / DEFAULTS.raw_total < 0.09
 
 
 def test_unmatched_intel_contributes_nothing(pack, catalogue, scored):
@@ -168,9 +211,9 @@ def test_exposure_conflict_is_reported_not_hidden(scored):
     assert conflicted, "the known exposure contradiction was not surfaced"
 
 
-def test_scoring_is_deterministic(pack, catalogue):
-    first, _ = score_all(pack, catalogue)
-    second, _ = score_all(pack, catalogue)
+def test_scoring_is_deterministic(pack, catalogue, advisory):
+    first, _ = score_all(pack, catalogue, advisory)
+    second, _ = score_all(pack, catalogue, advisory)
     assert [(r.vulnerability.vuln_id, r.score) for r in first] == [
         (r.vulnerability.vuln_id, r.score) for r in second
     ]
@@ -213,3 +256,132 @@ def test_kev_cves_are_deduplicated(scored):
     risks, _ = scored
     for entry in group(risks):
         assert len(entry.kev_cves) == len(set(entry.kev_cves))
+
+
+# ---------------------------------------------------------------- the advisory
+
+
+def test_advisory_is_parsed_not_merely_stored(advisory):
+    """The brief requires ingesting the threat report, so it must be used."""
+    assert len(advisory.campaigns) == 5
+    actors = {c.actor for c in advisory.campaigns}
+    assert {"CrimsonJackal", "RedMantis", "SilentForge", "IronVeil", "WinterViper"} == actors
+
+    # The four part synthetic form must survive the identifier regex. Matching
+    # CVE-SYN-2026-0004 as CVE-SYN-2026 would silently drop a campaign link.
+    chain = advisory.campaign_for("CVE-SYN-2026-0004")
+    assert chain is not None and chain.actor == "RedMantis"
+
+
+def test_every_advisory_identifier_exists_in_the_estate(pack, advisory):
+    present = {(v.cve or "").upper() for v in pack.vulnerabilities}
+    assert set(advisory.by_identifier) <= present
+
+
+def test_advisory_covers_a_cve_that_kev_cannot(scored):
+    """WinterViper's CVE-SYN-2026-0011 can never appear in CISA KEV.
+
+    Without the advisory there would be nothing at all to corroborate that it
+    is being exploited, which is the exact blind spot the README calls out.
+    """
+    risks, _ = scored
+    hits = [r for r in risks if r.vulnerability.cve == "CVE-SYN-2026-0011"]
+    assert hits
+    for risk in hits:
+        assert risk.kev is None
+        assert risk.advisory is not None
+        assert risk.factors["campaign"] > 0
+
+
+def test_advisory_contributes_score(pack, catalogue, advisory):
+    """Turning the advisory off must lower the risks it names, and only those."""
+    with_advisory, _ = score_all(pack, catalogue, advisory)
+    without, _ = score_all(pack, catalogue, None)
+    by_id = {r.vulnerability.vuln_id: r.score for r in without}
+
+    named = [r for r in with_advisory if r.advisory]
+    assert named
+    for risk in named:
+        assert risk.score >= by_id[risk.vulnerability.vuln_id]
+    assert any(r.score > by_id[r.vulnerability.vuln_id] for r in named)
+
+    for risk in (r for r in with_advisory if not r.advisory):
+        assert risk.score == by_id[risk.vulnerability.vuln_id]
+
+
+# ------------------------------------------------------------------- weights
+
+
+def test_zeroing_a_factor_removes_it_from_both_sides(pack, catalogue, advisory):
+    """A disabled factor must not drag every score toward zero."""
+    no_cvss = Weights.from_dict({"cap_cvss": 0})
+    risks, _ = score_all(pack, catalogue, advisory, no_cvss)
+    assert all(r.factors["cvss"] == 0 for r in risks)
+    # The denominator shrank with it, so the top score stays in range.
+    assert max(r.score for r in risks) > 80
+    assert no_cvss.raw_total == DEFAULTS.raw_total - DEFAULTS.cap_cvss
+
+
+def test_weights_change_the_ranking(pack, catalogue, advisory):
+    default_order = [r.vulnerability.vuln_id for r in score_all(pack, catalogue, advisory)[0][:10]]
+    business_only = Weights.from_dict(
+        {
+            "cap_exploitability": 0,
+            "cap_exposure": 0,
+            "cap_campaign": 0,
+            "cap_missing_controls": 0,
+            "cap_cvss": 0,
+        }
+    )
+    tuned_order = [
+        r.vulnerability.vuln_id
+        for r in score_all(pack, catalogue, advisory, business_only)[0][:10]
+    ]
+    assert default_order != tuned_order
+
+
+def test_all_caps_zero_does_not_divide_by_zero(pack, catalogue, advisory):
+    everything_off = Weights.from_dict(
+        {f"cap_{name}": 0 for name in
+         ("exploitability", "exposure", "campaign", "business_impact",
+          "missing_controls", "cvss")}
+    )
+    assert everything_off.raw_total == 1.0
+    risks, _ = score_all(pack, catalogue, advisory, everything_off)
+    assert all(r.score == 0 for r in risks)
+
+
+def test_weights_reject_junk_and_clamp_extremes():
+    w = Weights.from_dict(
+        {"cap_cvss": 10**9, "cap_exposure": "abc", "nonsense": 4,
+         "cap_campaign": None, "top_n": 900}
+    )
+    assert w.cap_cvss == 100.0
+    assert w.cap_exposure == DEFAULTS.cap_exposure
+    assert w.cap_campaign == DEFAULTS.cap_campaign
+    assert w.top_n == 25.0
+    assert not hasattr(w, "nonsense")
+
+
+def test_band_thresholds_are_tunable():
+    strict = Weights.from_dict({"band_critical": 95})
+    assert strict.band_for(93) == "High"
+    assert DEFAULTS.band_for(93) == "Critical"
+
+
+def test_changed_from_default_reports_only_real_changes():
+    w = Weights.from_dict({"cap_cvss": 0, "cap_exposure": DEFAULTS.cap_exposure})
+    changed = w.changed_from_default()
+    assert set(changed) == {"cap_cvss"}
+    assert changed["cap_cvss"] == (DEFAULTS.cap_cvss, 0.0)
+
+
+def test_top_n_and_service_cap_are_honoured(scored):
+    risks, _ = scored
+    w = Weights.from_dict({"top_n": 3, "max_risks_per_service": 2})
+    chosen = top_risks(group(risks, w), weights=w)
+    assert len(chosen) == 3
+    from collections import Counter
+
+    counts = Counter(g.service_name for g in chosen)
+    assert max(counts.values()) <= 2

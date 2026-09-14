@@ -106,7 +106,12 @@ _FENCE_RE = re.compile(r"^```(?:json|JSON)?\s*|\s*```$")
 # Models ignore style instructions often enough that the dash rule is also
 # enforced here, on every response. Built from code points so that no source
 # file in this project contains one of these characters itself.
-_DASH = "".join(chr(code) for code in (0x2013, 0x2014, 0x2012, 0x2015))
+#
+# The range covers U+2010 HYPHEN and U+2011 NON-BREAKING HYPHEN as well as the
+# dashes proper. Models emit those inside words, as in "security-relevant",
+# where they look like an ordinary hyphen but are not one, and survive any
+# rule that only looks for em and en dashes.
+_DASH = "".join(chr(code) for code in (0x2010, 0x2011, 0x2012, 0x2013, 0x2014, 0x2015))
 _RANGE_DASH_RE = re.compile(rf"(?<=\d)\s*[{_DASH}]\s*(?=\d)")
 _LEADING_DASH_RE = re.compile(rf"(?m)^([ \t]*)[{_DASH}][ \t]+")
 _SPACED_DASH_RE = re.compile(rf"[ \t]+[{_DASH}][ \t]+")
@@ -121,6 +126,8 @@ def sanitise_output(text: str) -> str:
     cleaned = _LEADING_DASH_RE.sub(lambda m: m.group(1) + "- ", cleaned)
     cleaned = _SPACED_DASH_RE.sub(", ", cleaned)
     cleaned = _ANY_DASH_RE.sub("-", cleaned)
+    # A non breaking hyphen glued between two word characters becomes a plain
+    # hyphen rather than a comma, which the spaced rule above would have done.
     return cleaned
 
 
