@@ -13,8 +13,10 @@ from typing import Any
 from . import keyring
 from .base import BaseProvider, LLMError
 from .providers import (
+    CloudflareProvider,
     GeminiProvider,
     GroqProvider,
+    HuggingFaceProvider,
     OmniRouterProvider,
     OpenAIProvider,
     OpenRouterProvider,
@@ -26,7 +28,9 @@ _ORDER: tuple[type[BaseProvider], ...] = (
     GroqProvider,
     OpenRouterProvider,
     OmniRouterProvider,
+    CloudflareProvider,
     OpenAIProvider,
+    HuggingFaceProvider,
 )
 
 _registry: dict[str, BaseProvider] | None = None
@@ -100,8 +104,9 @@ def resolve(provider_id: str | None = None, model: str | None = None) -> Selecti
             "No AI provider key is available for this request.",
             hint=(
                 "Open Settings and paste your own API key for Google Gemini, Groq, "
-                "OpenRouter, OmniRouter or any OpenAI compatible gateway. The key "
-                "stays in your browser and is sent only with your own requests."
+                "OpenRouter, OmniRouter, Cloudflare Workers AI, Hugging Face or any "
+                "OpenAI compatible gateway. The key stays in your browser and is sent "
+                "only with your own requests."
             ),
         )
 

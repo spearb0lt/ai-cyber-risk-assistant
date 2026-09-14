@@ -180,7 +180,22 @@ def test_health_and_config(client):
 
     config = client.get("/api/config").json()
     slugs = {p["id"] for p in config["providers"]}
-    assert slugs == {"gemini", "groq", "openrouter", "omnirouter", "openai"}
+    assert slugs == {
+        "gemini",
+        "groq",
+        "openrouter",
+        "omnirouter",
+        "cloudflare",
+        "openai",
+        "huggingface",
+    }
+    # Cloudflare is the only adapter needing a second credential, and the key
+    # panel renders its extra field off this flag.
+    cloudflare = next(p for p in config["providers"] if p["id"] == "cloudflare")
+    assert cloudflare["needs_account"] is True
+    assert all(
+        p["needs_account"] is False for p in config["providers"] if p["id"] != "cloudflare"
+    )
 
 
 def test_analysis_endpoint_shape(client):

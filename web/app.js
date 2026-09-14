@@ -12,6 +12,7 @@
 
 const KEY_STORE = "cra.keys";
 const BASE_STORE = "cra.bases";
+const ACCOUNT_STORE = "cra.accounts";
 
 function readStored(name) {
   try {
@@ -30,6 +31,7 @@ const store = {
   model: localStorage.getItem("cra.model") || "",
   keys: readStored(KEY_STORE),
   bases: readStored(BASE_STORE),
+  accounts: readStored(ACCOUNT_STORE),
   nist: null,
 };
 
@@ -37,6 +39,7 @@ function persistKeys() {
   try {
     localStorage.setItem(KEY_STORE, JSON.stringify(store.keys));
     localStorage.setItem(BASE_STORE, JSON.stringify(store.bases));
+    localStorage.setItem(ACCOUNT_STORE, JSON.stringify(store.accounts));
   } catch (e) {
     toast("warn", "Could not save the key", "This browser blocks local storage, so it lasts for this tab only.");
   }
@@ -56,6 +59,13 @@ function setBase(slug, value) {
   persistKeys();
 }
 
+function setAccount(slug, value) {
+  const trimmed = (value || "").trim();
+  if (trimmed) store.accounts[slug] = trimmed;
+  else delete store.accounts[slug];
+  persistKeys();
+}
+
 function keyHeaders() {
   const headers = {};
   Object.keys(store.keys).forEach((slug) => {
@@ -63,6 +73,9 @@ function keyHeaders() {
   });
   Object.keys(store.bases).forEach((slug) => {
     if (store.bases[slug]) headers["X-LLM-Base-" + slug] = store.bases[slug];
+  });
+  Object.keys(store.accounts).forEach((slug) => {
+    if (store.accounts[slug]) headers["X-LLM-Account-" + slug] = store.accounts[slug];
   });
   return headers;
 }
@@ -576,6 +589,8 @@ const KEY_HELP = {
   groq: "Free and very fast. Llama and GPT OSS models.",
   openrouter: "Has a number of models that are free to call.",
   omnirouter: "OpenAI compatible gateway fronting many providers.",
+  cloudflare: "Workers AI. Needs both an API token and your account id, because the account id is part of the request URL.",
+  huggingface: "Inference router. The token needs inference permission.",
   openai: "Also works with Ollama, LM Studio, vLLM or any OpenAI compatible gateway, if you set its base URL below.",
 };
 
@@ -635,6 +650,7 @@ function keyRow(provider) {
   remove.addEventListener("click", async () => {
     setKey(provider.id, "");
     setBase(provider.id, "");
+    setAccount(provider.id, "");
     input.value = "";
     await refreshConfig();
     status.className = "status";
@@ -643,6 +659,26 @@ function keyRow(provider) {
   });
 
   row.appendChild(el("div", { class: "kf" }, [input, save, remove]));
+
+  if (provider.needs_account) {
+    const accountInput = el("input", {
+      type: "text",
+      placeholder: "Account id (32 hex characters, from your Cloudflare dashboard)",
+      value: store.accounts[provider.id] || "",
+    });
+    accountInput.addEventListener("change", () => {
+      const value = accountInput.value.trim();
+      if (value && !/^[0-9a-zA-Z]{8,64}$/.test(value)) {
+        status.className = "status err";
+        status.textContent = "An account id is letters and digits only.";
+        return;
+      }
+      setAccount(provider.id, value);
+      status.className = "status ok";
+      status.textContent = value ? "Account id saved. Now press Save and test." : "Account id cleared.";
+    });
+    row.appendChild(el("div", { class: "kf", style: "margin-top:7px" }, [accountInput]));
+  }
 
   if (provider.accepts_base_url) {
     const details = el("details");
@@ -688,6 +724,7 @@ function openKeyManager() {
   clear.addEventListener("click", async () => {
     store.keys = {};
     store.bases = {};
+    store.accounts = {};
     persistKeys();
     await refreshConfig();
     openKeyManager();

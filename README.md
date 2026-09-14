@@ -215,9 +215,22 @@ Paste a key under **API keys** in the UI, or set one in `.env` (see `.env.exampl
 |---|---|---|
 | Google Gemini | yes | `GEMINI_API_KEY` |
 | Groq | yes | `GROQ_API_KEY` |
-| OpenRouter | yes, several free models | `OPENROUTER_API_KEY` |
+| OpenRouter | yes, 19 free models | `OPENROUTER_API_KEY` |
 | OmniRouter | — | `OMNIROUTER_API_KEY` |
+| Cloudflare Workers AI | yes | `CLOUDFLARE_API_TOKEN` **and** `CLOUDFLARE_ACCOUNT_ID` |
 | OpenAI-compatible | Ollama, LM Studio, vLLM | `OPENAI_API_KEY` + `OPENAI_BASE_URL` |
+| Hugging Face | yes | `HUGGINGFACE_API_KEY` |
+
+`.env.example` lists the usable model ids for each provider, including every
+current OpenRouter free model. Cloudflare needs both values because the account
+id is part of the request URL, so the key panel renders a second field for it.
+
+A caveat worth stating: OpenRouter's free models are individually unreliable.
+Of the eight tested against a live key, most returned a 429, a 403, or their own
+reasoning text instead of the JSON they were asked for. The picker therefore
+orders free models ahead of paid ones and defaults to `nex-agi/nex-n2.5-mini:free`,
+which was verified to return well formed JSON. When a model does fail, that risk
+falls back to its composed narrative and the UI says so rather than showing a gap.
 
 A key pasted in the UI is held in that browser, sent as an `X-LLM-Key-<provider>` header with
 that visitor's own requests, and never stored on the server or written to a log. Provider
@@ -236,7 +249,7 @@ app/
   retrieval/   numpy vector store, BM25, and the RRF hybrid retriever
   scoring/     the six-factor engine, and campaign x service grouping
   briefing/    retrieval queries, grounding guard, narrative, Markdown report
-  llm/         provider registry, per-request keyring, 5 adapters
+  llm/         provider registry, per-request keyring, 7 adapters
   api/         FastAPI routes and the BYOK dependency
 web/           dashboard, no build step
 scripts/       fetch_reference_data.py, build_index.py

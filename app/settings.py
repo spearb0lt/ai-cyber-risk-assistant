@@ -64,6 +64,11 @@ GROQ_API_KEY = env("GROQ_API_KEY")
 OPENROUTER_API_KEY = env("OPENROUTER_API_KEY")
 OMNIROUTER_API_KEY = env("OMNIROUTER_API_KEY")
 OPENAI_API_KEY = env("OPENAI_API_KEY")
+HUGGINGFACE_API_KEY = env("HUGGINGFACE_API_KEY", "HF_TOKEN")
+# Cloudflare needs both: the account id is part of the request URL, so a token
+# on its own cannot address anything.
+CLOUDFLARE_API_TOKEN = env("CLOUDFLARE_API_TOKEN")
+CLOUDFLARE_ACCOUNT_ID = env("CLOUDFLARE_ACCOUNT_ID")
 
 # Optional model preferences, promoted to the top of each picker.
 GEMINI_MODEL = env("GEMINI_MODEL")
@@ -71,11 +76,14 @@ GROQ_MODEL = env("GROQ_MODEL")
 OPENROUTER_MODEL = env("OPENROUTER_MODEL")
 OMNIROUTER_MODEL = env("OMNIROUTER_MODEL")
 OPENAI_MODEL = env("OPENAI_MODEL")
+HUGGINGFACE_MODEL = env("HUGGINGFACE_MODEL")
+CLOUDFLARE_MODEL = env("CLOUDFLARE_MODEL")
 
 # Optional gateway overrides.
 OPENAI_BASE_URL = env("OPENAI_BASE_URL")
 OPENROUTER_BASE_URL = env("OPENROUTER_BASE_URL")
 OMNIROUTER_BASE_URL = env("OMNIROUTER_BASE_URL")
+HUGGINGFACE_BASE_URL = env("HUGGINGFACE_BASE_URL")
 
 # Embeddings. "local" needs no key; "gemini" reuses GEMINI_API_KEY.
 EMBEDDER = (env("EMBEDDER", default="local") or "local").lower()

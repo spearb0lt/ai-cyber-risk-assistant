@@ -78,6 +78,11 @@ class ProviderStatus:
     key_source: str = ""
     # True for adapters that accept a custom OpenAI compatible base URL.
     accepts_base_url: bool = False
+    # True when the provider needs a second value alongside the key, which
+    # Cloudflare does because its account id sits in the URL path. The key
+    # panel renders an extra field for these.
+    needs_account: bool = False
+    has_account: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -91,6 +96,8 @@ class ProviderStatus:
             "key_names": list(self.key_names),
             "key_source": self.key_source,
             "accepts_base_url": self.accepts_base_url,
+            "needs_account": self.needs_account,
+            "has_account": self.has_account,
         }
 
 
@@ -161,8 +168,16 @@ class BaseProvider:
     models: tuple[ModelSpec, ...] = ()
     accepts_base_url: bool = False
 
+    # Set by an adapter that needs a second value besides the key.
+    needs_account: bool = False
+
     # Credential read from the environment at construction. May be None.
     env_key: str | None = None
+
+    @property
+    def account_id(self) -> str:
+        """Only meaningful for an adapter that sets needs_account."""
+        return ""
 
     @property
     def api_key(self) -> str | None:
@@ -203,6 +218,8 @@ class BaseProvider:
             key_names=self.key_names,
             key_source=self.key_source,
             accepts_base_url=self.accepts_base_url,
+            needs_account=self.needs_account,
+            has_account=bool(self.account_id),
         )
 
     def verify(self) -> list[str]:

@@ -22,6 +22,10 @@ from contextvars import ContextVar
 #   X-LLM-Base-openai: https://my-gateway.example/v1
 KEY_PREFIX = "x-llm-key-"
 BASE_URL_PREFIX = "x-llm-base-"
+# Cloudflare Workers AI puts the account id in the URL path, so a token on its
+# own cannot address anything. That second value rides its own header:
+#   X-LLM-Account-cloudflare: <account id>
+ACCOUNT_PREFIX = "x-llm-account-"
 
 # A credential longer than this, or carrying anything outside printable ASCII,
 # is a mistake or an injection attempt rather than a real key. Rejecting it
@@ -34,6 +38,7 @@ _EMPTY: dict[str, str] = {}
 
 _keys: ContextVar[dict[str, str]] = ContextVar("llm_client_keys", default=_EMPTY)
 _base_urls: ContextVar[dict[str, str]] = ContextVar("llm_client_base_urls", default=_EMPTY)
+_accounts: ContextVar[dict[str, str]] = ContextVar("llm_client_accounts", default=_EMPTY)
 
 
 def clean_key(value: str | None) -> str:
@@ -52,15 +57,27 @@ def clean_base_url(value: str | None) -> str:
     return candidate if _SAFE_URL.match(candidate) else ""
 
 
-def bind(keys: dict[str, str] | None, base_urls: dict[str, str] | None = None) -> None:
+def clean_account(value: str | None) -> str:
+    """An account id that is safe to interpolate into a URL path."""
+    candidate = (value or "").strip()
+    return candidate if _SAFE_ACCOUNT.match(candidate) else ""
+
+
+def bind(
+    keys: dict[str, str] | None,
+    base_urls: dict[str, str] | None = None,
+    accounts: dict[str, str] | None = None,
+) -> None:
     """Attach a request's credentials to the current context."""
     _keys.set({k: v for k, v in (keys or {}).items() if v} or _EMPTY)
     _base_urls.set({k: v for k, v in (base_urls or {}).items() if v} or _EMPTY)
+    _accounts.set({k: v for k, v in (accounts or {}).items() if v} or _EMPTY)
 
 
 def reset() -> None:
     _keys.set(_EMPTY)
     _base_urls.set(_EMPTY)
+    _accounts.set(_EMPTY)
 
 
 def key_for(provider_id: str) -> str:
@@ -69,6 +86,10 @@ def key_for(provider_id: str) -> str:
 
 def base_url_for(provider_id: str) -> str:
     return _base_urls.get().get(provider_id, "")
+
+
+def account_for(provider_id: str) -> str:
+    return _accounts.get().get(provider_id, "")
 
 
 def supplied() -> frozenset[str]:

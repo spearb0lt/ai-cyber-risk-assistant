@@ -113,7 +113,10 @@ def _hint_for(message: str, label: str) -> str:
 
 
 # Models that spend output tokens on hidden reasoning before answering.
-_REASONING_MODEL = re.compile(r"gpt-oss|qwen3|deepseek-r1|magistral|o1-|o3-|o4-", re.IGNORECASE)
+_REASONING_MODEL = re.compile(
+    r"gpt-oss|qwen3|deepseek-r1|magistral|o1-|o3-|o4-|nemotron|inkling|ling-3|laguna|nex-n",
+    re.IGNORECASE,
+)
 
 
 def _compose_system(system: str | None) -> str:
@@ -378,15 +381,49 @@ class OpenRouterProvider(OpenAICompatibleProvider):
         self.env_key = settings.OPENROUTER_API_KEY
         self.env_base_url = settings.OPENROUTER_BASE_URL or "https://openrouter.ai/api/v1"
         self.preferred = settings.OPENROUTER_MODEL
+        # Verified against the live catalogue. OpenRouter retires free models
+        # without notice, so these are a preference and not a guarantee: any id
+        # that has gone is dropped by _merge and discovery fills the gap.
+        # Ordered by what actually works, not by size. Most OpenRouter free
+        # models either rate limit immediately, refuse structured output, or
+        # emit their reasoning instead of the JSON they were asked for. These
+        # two were verified to return well formed JSON against this key.
         self.curated = [
             ModelSpec(
-                "meta-llama/llama-3.3-70b-instruct:free",
-                "Llama 3.3 70B (free)",
-                note="No cost on OpenRouter's free tier",
+                "nex-agi/nex-n2.5-mini:free",
+                "Nex N2.5 Mini (free)",
+                note="262k context, reliable structured output and quick",
             ),
-            ModelSpec("deepseek/deepseek-chat-v3-0324:free", "DeepSeek V3 (free)"),
-            ModelSpec("google/gemini-2.0-flash-exp:free", "Gemini 2.0 Flash (free)"),
+            ModelSpec(
+                "nex-agi/nex-n2.5-pro:free",
+                "Nex N2.5 Pro (free)",
+                note="262k context, higher quality but can take minutes",
+            ),
+            ModelSpec(
+                "nvidia/nemotron-3-ultra-550b-a55b:free",
+                "Nemotron 3 Ultra 550B (free)",
+                note="1M context, reasoning model, slower",
+            ),
+            ModelSpec(
+                "nvidia/nemotron-3.5-lightning:free",
+                "Nemotron 3.5 Lightning (free)",
+                note="1M context, reasoning model",
+            ),
+            ModelSpec("google/gemma-4-31b-it:free", "Gemma 4 31B (free)", note="262k context"),
         ] + list(_extra(self.id))
+
+    def _discover(self) -> list[str]:
+        """List callable models, free ones first.
+
+        OpenRouter serves roughly 450 models, the large majority of them paid.
+        A free tier key calling a paid id fails with a 402 that reads like a
+        broken deployment, so the free ids are ordered to the front and become
+        what the picker defaults to.
+        """
+        ids = super()._discover()
+        free = [i for i in ids if i.endswith(":free")]
+        paid = [i for i in ids if not i.endswith(":free")]
+        return free + paid
 
 
 class OmniRouterProvider(OpenAICompatibleProvider):
@@ -566,3 +603,143 @@ class GeminiProvider(BaseProvider):
             retryable=_is_transient(message),
             hint=_hint_for(message, self.label),
         )
+
+
+class HuggingFaceProvider(OpenAICompatibleProvider):
+    """Hugging Face's inference router, which speaks the OpenAI protocol."""
+
+    id = "huggingface"
+    label = "Hugging Face"
+    docs_url = "https://huggingface.co/settings/tokens"
+    key_names = ("HUGGINGFACE_API_KEY", "HF_TOKEN")
+    model_cap = 30
+
+    def __init__(self) -> None:
+        self.env_key = settings.HUGGINGFACE_API_KEY
+        self.env_base_url = settings.HUGGINGFACE_BASE_URL or "https://router.huggingface.co/v1"
+        self.preferred = settings.HUGGINGFACE_MODEL
+        self.curated = [
+            ModelSpec("meta-llama/Llama-3.3-70B-Instruct", "Llama 3.3 70B Instruct"),
+            ModelSpec("Qwen/Qwen2.5-72B-Instruct", "Qwen2.5 72B Instruct"),
+            ModelSpec("deepseek-ai/DeepSeek-V3-0324", "DeepSeek V3", note="Long context"),
+        ] + list(_extra(self.id))
+
+    def unavailable_reason(self) -> str:
+        return (
+            "Paste a Hugging Face access token in Settings, or set HUGGINGFACE_API_KEY "
+            "on the server. The token needs inference permission."
+        )
+
+
+_CF_API_ROOT = "https://api.cloudflare.com/client/v4"
+
+
+class CloudflareProvider(OpenAICompatibleProvider):
+    """Cloudflare Workers AI.
+
+    The odd one out: the account id is part of the request URL, so a token
+    alone cannot address anything. That second value travels in its own header
+    and is validated as strictly alphanumeric, because it is interpolated into
+    a path and must not be able to escape its segment.
+    """
+
+    id = "cloudflare"
+    label = "Cloudflare Workers AI"
+    docs_url = "https://dash.cloudflare.com/profile/api-tokens"
+    key_names = ("CLOUDFLARE_API_TOKEN",)
+    model_cap = 24
+    needs_account = True
+    accepts_base_url = False
+
+    def __init__(self) -> None:
+        self.env_key = settings.CLOUDFLARE_API_TOKEN
+        self.env_account = settings.CLOUDFLARE_ACCOUNT_ID
+        self.preferred = settings.CLOUDFLARE_MODEL
+        # Only ids verified against Cloudflare's own model pages are listed.
+        # Anything else the account can call arrives through discovery.
+        self.curated = [
+            ModelSpec(
+                "@cf/openai/gpt-oss-120b",
+                "GPT OSS 120B",
+                note="128k context, strongest reasoning here",
+            ),
+            ModelSpec(
+                "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+                "Llama 3.3 70B Instruct FP8 Fast",
+                note="24k context, quick and capable default",
+            ),
+            ModelSpec(
+                "@cf/meta/llama-4-scout-17b-16e-instruct",
+                "Llama 4 Scout 17B",
+                note="131k context, natively multimodal",
+            ),
+            ModelSpec("@cf/qwen/qwen3-30b-a3b-fp8", "Qwen3 30B A3B FP8", note="32k context"),
+        ] + list(_extra(self.id))
+
+    @property
+    def account_id(self) -> str:
+        return keyring.account_for(self.id) or self.env_account or ""
+
+    @property
+    def base_url(self) -> str:
+        account = self.account_id
+        if not account:
+            return ""
+        return f"{_CF_API_ROOT}/accounts/{account}/ai/v1"
+
+    def is_available(self) -> bool:
+        return bool(self.api_key and self.account_id)
+
+    def unavailable_reason(self) -> str:
+        if self.api_key and not self.account_id:
+            return (
+                "Cloudflare also needs your account id, which is part of the request "
+                "URL. Add it in Settings, or set CLOUDFLARE_ACCOUNT_ID on the server."
+            )
+        return (
+            "Paste a Cloudflare API token and account id in Settings, or set "
+            "CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID on the server. The token "
+            "needs the Workers AI permission."
+        )
+
+    def _discover(self) -> list[str]:
+        """Cloudflare's OpenAI layer has no /models, so its own search API is used."""
+        if not (self.api_key and self.account_id):
+            return []
+        try:
+            import requests
+
+            response = requests.get(
+                f"{_CF_API_ROOT}/accounts/{self.account_id}/ai/models/search",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                params={"per_page": 200, "task": "Text Generation"},
+                timeout=15,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            return [
+                item["name"]
+                for item in payload.get("result", [])
+                if isinstance(item, dict) and item.get("name")
+            ]
+        except Exception:  # noqa: BLE001 - discovery is best effort
+            return []
+
+    def verify(self) -> list[str]:
+        if not self.api_key:
+            raise LLMError(self.unavailable_reason(), provider=self.id)
+        if not self.account_id:
+            raise LLMError(
+                "Cloudflare needs an account id as well as a token.",
+                provider=self.id,
+                hint="Find it on the right of your Cloudflare dashboard overview page.",
+            )
+        ids = self._discover()
+        if not ids:
+            raise LLMError(
+                "Cloudflare did not accept that token and account id pair.",
+                provider=self.id,
+                hint="Check the token has the Workers AI permission and the account id is correct.",
+            )
+        _cache_put(self.id, ids, self.api_key)
+        return ids
