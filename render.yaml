@@ -1,0 +1,30 @@
+services:
+  - type: web
+    name: cyber-risk-assistant
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      # Every provider key is optional. The full analysis, the ranking and the
+      # NIST retrieval all run without one; a key only upgrades the written
+      # narrative from a composed template to model prose.
+      # sync: false means Render prompts for the value and never stores it in
+      # this file, so no secret is ever committed.
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: OMNIROUTER_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      # Lets a visitor paste their own key in the UI instead.
+      - key: ALLOW_CLIENT_KEYS
+        value: "1"
+      - key: EMBEDDER
+        value: local

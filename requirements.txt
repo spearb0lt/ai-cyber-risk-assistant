@@ -1,0 +1,16 @@
+fastapi>=0.115.6,<1.0
+uvicorn[standard]>=0.34.0
+pydantic>=2.9,<3.0
+python-dotenv>=1.0.1
+requests>=2.32.3
+numpy>=1.26,<3.0
+
+# LLM providers. Both are optional at runtime: a missing key simply means the
+# matching provider reports itself unavailable. The OpenAI SDK is the client
+# for every OpenAI compatible gateway (Groq, OpenRouter, OmniRouter, Ollama).
+openai>=1.59.6
+google-genai>=1.2.0
+
+# Embeddings. ONNX runtime, not torch: ~21 MB of wheels instead of ~900 MB,
+# which is what makes this fit a 512 MB free instance.
+fastembed>=0.4.2

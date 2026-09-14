@@ -1,0 +1,24 @@
+# Secrets. Never commit a provider key.
+.env
+.env.local
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Model weights downloaded at runtime by fastembed
+data/models/
+
+# OS noise
+.DS_Store
+Thumbs.db
+__MACOSX/
+.pytest_cache/

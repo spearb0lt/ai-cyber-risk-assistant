@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Cyber Risk Assistant</title>
+<meta name="description" content="Prioritised, explainable cyber risk for TawasolPay." />
+<link rel="stylesheet" href="/styles.css" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#128737;</text></svg>" />
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="mark" aria-hidden="true"></span>
+    <div>
+      <h1 id="appName">Cyber Risk Assistant</h1>
+      <p id="appTagline">Prioritised, explainable cyber risk for TawasolPay</p>
+    </div>
+  </div>
+  <div class="topbar-actions">
+    <button id="briefBtn" class="btn" type="button" title="Rewrite the narratives with a language model">
+      Generate with AI
+    </button>
+    <button id="downloadBtn" class="btn" type="button">Download brief</button>
+    <button id="keysBtn" class="btn ghost" type="button">API keys</button>
+  </div>
+</header>
+
+<div id="banner" class="banner" hidden></div>
+
+<main>
+  <section id="stats" class="stats" aria-label="Estate summary"></section>
+
+  <nav class="tabs" role="tablist">
+    <button class="tab active" data-view="risks" role="tab">Top risks</button>
+    <button class="tab" data-view="ranking" role="tab">Full ranking</button>
+    <button class="tab" data-view="intel" role="tab">Unmatched intel</button>
+    <button class="tab" data-view="quality" role="tab">Data quality</button>
+    <button class="tab" data-view="nist" role="tab">Search NIST</button>
+    <button class="tab" data-view="method" role="tab">How it works</button>
+  </nav>
+
+  <div id="view" class="view">
+    <div class="loading">Loading analysis...</div>
+  </div>
+</main>
+
+<footer>
+  <p>
+    Sources: CISA Known Exploited Vulnerabilities catalogue, NIST SP 800-53 Rev. 5 control
+    catalogue, and TawasolPay's own asset, vulnerability, threat intelligence and business
+    service records. Ranking and control retrieval are deterministic and never use a
+    language model.
+  </p>
+</footer>
+
+<div id="modal" class="modal" hidden>
+  <div class="modal-card" role="dialog" aria-modal="true">
+    <div class="modal-head">
+      <h2 id="modalTitle"></h2>
+      <button id="modalClose" class="icon-btn" type="button" aria-label="Close">&times;</button>
+    </div>
+    <div id="modalBody" class="modal-body"></div>
+  </div>
+</div>
+
+<div id="toasts" class="toasts" aria-live="polite"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>
