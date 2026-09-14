@@ -4,7 +4,13 @@ Takes TawasolPay's data pack and produces a prioritised, explainable risk pictur
 top 5 with evidence, matched threat intelligence, business impact, and remediation guidance
 retrieved from the real NIST SP 800-53 Rev. 5 catalogue.
 
-**Live:** _(deployment URL)_ &nbsp;·&nbsp; **Brief as Markdown:** `/api/report.md` &nbsp;·&nbsp; **API docs:** `/api/docs`
+**Live:** <https://cyber-risk-assistant-8tun.onrender.com>
+&nbsp;·&nbsp; [Brief as Markdown](https://cyber-risk-assistant-8tun.onrender.com/api/report.md)
+&nbsp;·&nbsp; [API docs](https://cyber-risk-assistant-8tun.onrender.com/api/docs)
+
+> Hosted on Render's free tier, which sleeps after 15 minutes idle. A first
+> request after that wakes the instance and rebuilds the analysis, so allow
+> about a minute. Every request after it is immediate.
 
 > The deployed instance ships **no API keys and needs none**. Ranking, KEV cross-referencing
 > and NIST retrieval are deterministic and run locally, so the complete brief is there on
@@ -274,11 +280,15 @@ tests/         40 tests
 
 ## Deployment
 
-Render free web service from the committed `Dockerfile` and `render.yaml`. The embedding
-model is baked into the image at build time so a cold start does not spend 30 seconds
-downloading weights, and the whole analysis is computed once in the FastAPI `lifespan` so the
-first request after a cold start is served from cache. The image is host-agnostic and runs
-unchanged anywhere Docker does.
+Render free web service from the committed `Dockerfile` and `render.yaml`, in the Singapore
+region. The embedding model is baked into the image at build time so a cold start does not
+spend 30 seconds downloading weights, and the whole analysis is computed once in the FastAPI
+`lifespan` rather than on first request, which moves the roughly 44 seconds of ingest,
+scoring and retrieval into the cold start the platform is already waiting on.
+
+Semantic retrieval does run on the free tier: the deployed instance reports
+`"mode": "hybrid"` at `/api/config`, so ONNX inference fits inside the 512 MB
+comfortably. The image is host-agnostic and runs unchanged anywhere Docker does.
 
 ## Sources
 
