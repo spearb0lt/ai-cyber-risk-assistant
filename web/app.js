@@ -240,36 +240,30 @@ function capFor(key) {
 }
 
 
-/* How clear the retrieval call was.
+/* The alternative control that was considered and rejected.
  *
- * A single cited control reads as certain whether it won by a mile or a hair,
- * so the runner up and the margin are shown alongside it. A near tie against
- * the control's own enhancement is settled by the base-control rule rather
- * than by the score, and is labelled as such so it is not mistaken for the
- * retriever being undecided between two different answers. */
+ * Only shown when the runner up is a genuinely different control. A base
+ * control beating its own enhancement, SI-2 over SI-2(3), is decided by a
+ * rule rather than by the scores, so printing a margin for it would dress a
+ * fixed outcome up as a contest; seventeen of the twenty pairings in this
+ * brief are that case.
+ *
+ * The fused score itself is deliberately not shown. It is a reciprocal rank
+ * fusion sum, not a probability or a confidence, so a reader cannot do
+ * anything with the number. It is still returned by /api/analysis for anyone
+ * auditing the retrieval. What a reader can use is the name of the control
+ * that came second, which is a judgement they can disagree with.
+ */
 function retrievalLine(control) {
   const r = control.retrieval;
-  if (!r || typeof r.score !== "number") return "";
-  if (!r.runner_up) {
-    return (
-      `<div class="retrieval"><span class="rs">fused score ${r.score.toFixed(3)}</span>` +
-      ` &middot; no other control was returned for this facet</div>`
-    );
-  }
+  if (!r || !r.runner_up || r.same_family) return "";
   const close = r.margin_percent < 10;
-  const who = r.same_family
-    ? `its own enhancement ${esc(r.runner_up)}`
-    : `${esc(r.runner_up)} ${esc(r.runner_up_name)}`;
-  const note = r.same_family
-    ? ` &middot; a base control is preferred over its own enhancement by rule`
-    : "";
   return (
     `<div class="retrieval${close ? " close" : ""}">` +
-    `<span class="rs">fused score ${r.score.toFixed(3)}</span>` +
-    ` &middot; ahead of ${who} at ${r.runner_up_score.toFixed(3)}` +
-    `, a margin of ${r.margin_percent.toFixed(0)}%` +
-    note +
-    (close ? ` &middot; <strong>close call, treat the choice as uncertain</strong>` : "") +
+    `Also considered: <strong>${esc(r.runner_up)} ${esc(r.runner_up_name)}</strong>` +
+    (close
+      ? `, which scored almost the same. <strong>Treat this choice as uncertain.</strong>`
+      : `, which scored lower.`) +
     `</div>`
   );
 }
