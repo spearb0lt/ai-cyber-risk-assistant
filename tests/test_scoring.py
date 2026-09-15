@@ -385,3 +385,29 @@ def test_top_n_and_service_cap_are_honoured(scored):
 
     counts = Counter(g.service_name for g in chosen)
     assert max(counts.values()) <= 2
+
+
+def test_assets_with_no_findings_are_reported_not_assumed_clean(pack):
+    """An asset with no vulnerability rows is invisible in a risk-only report.
+
+    The pack has no scan date, so "clean" and "never scanned" are the same
+    absence. Ingest must say so rather than let the reader infer safety.
+    """
+    from app.ingest import quality
+
+    issues = quality.inspect(pack)
+    silent = [i for i in issues if i.kind == "no_findings_recorded"]
+    with_findings = {v.asset_id for v in pack.vulnerabilities}
+    expected = [a for a in pack.assets.values() if a.asset_id not in with_findings]
+    assert len(silent) == len(expected) == 19
+
+    # An internet exposed or high criticality asset must be raised to a
+    # warning, not filed as an informational note.
+    warned = {i.subject for i in silent if i.severity == "warning"}
+    for asset in expected:
+        notable = asset.internet_exposed or asset.criticality.lower() in {"critical", "high"}
+        assert (asset.asset_id in warned) == notable, (
+            f"{asset.asset_id} severity does not match its exposure and criticality"
+        )
+    # The internet facing staging gateway is the clearest case.
+    assert "A-1036" in warned

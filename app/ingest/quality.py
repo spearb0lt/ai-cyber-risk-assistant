@@ -90,6 +90,32 @@ def inspect(pack: DataPack) -> list[Issue]:
                 )
             )
 
+    # An asset with no findings at all is the quietest failure in the pack.
+    # Nothing in assets.csv records when an asset was last scanned, so "clean"
+    # and "never looked at" are the same row to this system, and an asset in
+    # neither state appears nowhere in a report that only lists risks.
+    with_findings = {v.asset_id for v in pack.vulnerabilities}
+    silent = [a for a in pack.assets.values() if a.asset_id not in with_findings]
+    for asset in silent:
+        notable = asset.internet_exposed or asset.criticality.lower() in {"critical", "high"}
+        issues.append(
+            Issue(
+                "no_findings_recorded",
+                "warning" if notable else "info",
+                asset.asset_id,
+                f"{asset.asset_name} has no vulnerability records at all. The data pack "
+                "has no scan date, so this cannot be distinguished from an asset that "
+                "was never scanned, and it appears nowhere in the ranking either way."
+                + (
+                    f" It is {asset.criticality.lower()} criticality"
+                    + (" and internet exposed" if asset.internet_exposed else "")
+                    + ", so treat its absence as unverified rather than clean."
+                    if notable
+                    else ""
+                ),
+            )
+        )
+
     # Synthetic identifiers cannot be confirmed against any public catalogue.
     synthetic = sorted({v.cve for v in pack.vulnerabilities if v.is_synthetic_id})
     if synthetic:

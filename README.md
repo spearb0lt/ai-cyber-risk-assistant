@@ -41,9 +41,11 @@ Four things it deliberately also does, because leaving them out would be a quiet
   of it.
 - **Reports the 16 threat intel records that do not match this estate.** They score zero.
   They are still listed, because "we checked and it does not affect us" is a finding.
-- **Reports 6 data quality problems found during ingest**, an exposure contradiction, an
-  ownerless asset, 3 stale assets, and 59 identifiers that are not real CVEs, next to the
-  findings they affect.
+- **Reports 25 data quality problems found during ingest**, an exposure contradiction, an
+  ownerless asset, 3 stale assets, 59 identifiers that are not real CVEs, and 19 assets with no
+  findings at all, next to the findings they affect. That last group matters most: an asset with
+  no records is invisible in a report that only lists risks, and nothing in the pack says whether
+  it was scanned and clean or never scanned.
 
 ---
 
@@ -79,9 +81,9 @@ Six factors, each capped, summed to a raw 114 and normalised to 0 to 100:
 to rank below a CVSS 8 on an internet-facing payment gateway under an active campaign. Over
 this dataset:
 
-- the highest-CVSS findings on internal development servers land at ranks **25, 26 and 73**
+- the highest-CVSS findings on internal development servers land at ranks **18, 19, 40 and 60**
 - a pure-CVSS ordering would promote **V-2089 (CVSS 10.0)**, which this model scores **37.2**
-- `pearson(score, cvss) = 0.52`, correlated, because CVSS is real signal, but not governing
+- `pearson(score, cvss) = 0.53`, correlated, because CVSS is real signal, but not governing
 
 `tests/test_scoring.py` asserts each of these as a property of the output, not as a comment.
 
@@ -172,54 +174,101 @@ search slower and less accurate. At a hundred times this corpus size that trade 
 
 ## Supporting question 2, three specific ways this produces wrong output
 
-**1. 59 of the 79 distinct identifiers in `vulnerabilities.csv` are not real CVE ids, so KEV
-cannot adjudicate them, and absence from KEV is not absence of exploitation.**
-Only 29 of 114 findings resolve against the live KEV catalogue. `CVE-SYN-2026-0011` (the API
-Admin Interface exposure that WinterViper is actively exploiting per the MDR advisory) will
-never appear in KEV, so it forfeits the 14 points a KEV listing carries and can be ranked
-below a real CVE that is objectively less urgent here. The same failure applies to any
-genuine zero-day: real, exploited, not yet catalogued.
-*What I did:* `Vulnerability.is_synthetic_id` distinguishes "not in KEV" from "cannot be
-checked against KEV", and every affected finding carries an explicit caveat saying which. The
-KEV snapshot's age is computed from its newest entry and shown in the UI, with a warning
-banner past 30 days, because a stale snapshot fails silently and looks identical to a fresh
-one. *What I would add:* a second corroborating source (NVD CVSS vectors, VulnCheck KEV,
-EPSS probability) so exploitation evidence does not rest on one catalogue.
+**1. Most of the identifiers here are not real CVE ids, so CISA KEV cannot judge them, and
+"not in KEV" is not the same as "not being exploited".**
 
-**2. `asset_exposure` in `vulnerabilities.csv` and `internet_exposed` in `assets.csv`
-disagree, and exposure is worth 14 points.** V-2014 is recorded as `Internal` while its asset
-A-1004 is `internet_exposed=Yes`. I resolve to the more severe reading, which is the safe
-default but is a guess: if the vulnerability feed is right, that finding is over-ranked by 14
-points and something genuinely exposed may be under-ranked below it.
-*What I did:* the conflict is detected at ingest, reported in **Data quality**, and attached
-as a caveat to the specific finding rather than resolved silently. *What I would add:* treat
-disagreement as a third state rather than picking a winner, rank the finding under both
-readings and surface the spread, so the reviewer sees the ranking is unstable there instead of
-seeing a confident number.
+`vulnerabilities.csv` contains 79 distinct identifiers. Only 20 are real CVE ids such as
+`CVE-2023-4966`. The other 59 are invented for this exercise: `CVE-SYN-2026-0011`,
+`CICD-SYN-001`, `K8S-SYN-002`. CISA KEV is a real public catalogue of real CVEs, so looking up
+an invented id returns nothing. The trap is that "nothing" has two completely different
+meanings, and a naive system treats them the same:
 
-**3. Grouping by campaign and business service can merge two things that need separate
-decisions, or split one that needs a single decision.** CVE-2023-4966 appears as risks 1 and 2
-because it hits two services with different owners, correct here, since the CFO and the Chief
-Digital Officer act separately, but it spends two of five slots on one CVE. Conversely, a
-finding with no matched intel groups by `affected_component`, so two genuinely different
-weaknesses sharing a component string ("OpenSSH" covers 6 findings across 6 assets) can be
-merged and the quieter one disappears from the brief entirely.
-*What I did:* the diversity cap (`MAX_RISKS_PER_SERVICE`) is configurable, the amplifier is
-bounded at +6 so blast radius cannot manufacture a top-5 entry, and the complete ungrouped
-114-row ranking is one click away so nothing is only visible through the grouping.
-*What I would add:* assert that no finding above a score threshold is absent from the brief
-while being non-adjacent to anything in it, which would catch a merge that swallowed a
-distinct risk.
+- *CISA checked and it is not being exploited.* Genuinely reassuring.
+- *CISA has no opinion, because this id does not exist to them.* Tells you nothing.
 
-Two more the system already guards against, since they are the obvious ones:
-**the LLM citing a control it never retrieved**, `briefing/guard.py` drops any sentence
-citing a NIST control outside the retrieved set or a CVE not attached to the risk, reports the
-drop, and falls back to the composed narrative if the text does not survive; and
-**threat intel that does not apply to this estate**, the 16 unmatched records contribute
-exactly zero and are reported separately, with region and sector relevance downweighting
-partial matches rather than counting them at full strength.
+Reading the second as the first silently costs the finding the 14 points a KEV listing carries.
+The concrete case is `CVE-SYN-2026-0011` on `partner-api-gateway-prod`: absent from KEV, so its
+exploitation evidence sits at 12 of 30, while the MDR advisory says in plain English that
+WinterViper is exploiting that exact weakness in the Gulf right now. This is not an artefact of
+synthetic data. Every genuine zero-day has the same shape: real, exploited, not yet catalogued.
 
----
+*What I did.* Two things, and the second was added after this problem was written up.
+`Vulnerability.is_synthetic_id` separates "not in KEV" from "cannot be checked against KEV",
+and every affected finding carries a caveat saying which one applies. Then the MDR advisory was
+wired in as a second, independent source of exploitation evidence. It closes this specific case:
+`CVE-SYN-2026-0011` now scores 71.3 with the full 20 of 20 campaign points, because the advisory
+names it even though KEV cannot. The KEV snapshot's own age is also computed from its newest
+entry and shown in the UI, with a warning past 30 days, since a stale catalogue fails silently
+and looks identical to a fresh one.
+*What is still open.* The advisory only covers the 10 identifiers it happens to name. The other
+49 synthetic ids remain unverifiable by any external source, and a real zero-day absent from both
+KEV and the advisory would still be under-scored. The fix is a third source, EPSS exploitation
+probability or VulnCheck KEV, so no single catalogue's blind spot is the system's blind spot.
+
+**2. The two files disagree about whether an asset is reachable from the internet, and that is
+worth 14 points.**
+
+Exposure is the second largest single signal in the model, and two different files assert it:
+
+```
+vulnerabilities.csv   V-2014   asset_exposure   = "Internal"
+assets.csv            A-1004   internet_exposed = "Yes"        (payment-api-prod-02)
+```
+
+They cannot both be right. I resolve to the more severe reading and treat it as exposed, which
+is the safe default but is still a guess. If the vulnerability feed is the accurate one, V-2014
+is over-ranked by 14 points it did not earn, and something genuinely exposed sits below it. It
+currently scores 38.5 with 14 of 22 exposure points that may be entirely unwarranted. One row
+disagrees today; in a real estate of a hundred thousand findings this class of contradiction is
+constant, and quietly picking a winner hides it.
+
+*What I did.* The conflict is detected at ingest, listed under **Data quality**, and attached as
+a caveat to that specific finding rather than resolved out of sight.
+*What I would add.* Treat disagreement as a third state instead of picking a winner: score the
+finding under both readings and show the spread, so a reader sees the ranking is unstable there
+rather than a single confident number.
+
+**3. An asset with no findings looks exactly like an asset that is safe, and 19 of the 60 are in
+that position.**
+
+This is the quietest failure of the three, and the most dangerous, because the other two
+mis-rank something that is at least visible. This one makes things invisible.
+
+The system reports risks. An asset with no vulnerability records produces no risks, so it never
+appears anywhere in the brief. A reader would reasonably conclude those assets are fine. But
+`assets.csv` has no column recording when an asset was last scanned, so **there is no way to tell
+"scanned and clean" from "never scanned at all"**. Both are simply an absence of rows.
+
+19 of the 60 assets are in this state, and five of them are not the sort you would want silently
+omitted from a board brief:
+
+```
+A-1036  auth-gateway-staging   internet exposed
+A-1031  compliance-db-prod     high criticality
+A-1035  crm-db-prod            high criticality
+A-1053  exec-laptop-cto        high criticality
+A-1054  exec-laptop-ciso       high criticality
+```
+
+An internet-facing authentication gateway and the CISO's own laptop are absent from the risk
+picture entirely, and nothing in the output says so.
+
+*What I did.* Ingest now emits a `no_findings_recorded` issue for every one of them, raised to a
+warning when the asset is internet exposed or high criticality, with wording that says the
+absence is unverified rather than clean. They are listed under **Data quality**, so a reader sees
+the 19 gaps beside the 5 ranked risks.
+*What I would add.* Reporting a gap is weaker than closing one. The real fix is a scan coverage
+field in the inventory, so the system can say "last scanned 3 days ago, clean" or "never scanned",
+and then treat an unscanned internet-facing asset as a risk in its own right rather than a
+footnote. That is a change to the data contract, not to the code.
+
+Two further failure modes the system already guards against, since they are the obvious ones:
+**a language model citing a control it never retrieved**, where `briefing/guard.py` drops any
+sentence naming a NIST control outside the retrieved set or a CVE not attached to the risk,
+reports the drop, and falls back to the composed narrative if nothing survives; and **threat
+intel that does not apply to this estate**, where the 16 unmatched records contribute exactly
+zero, are reported separately, and partial region or sector matches are downweighted rather than
+counted at full strength.
 
 ## Supporting question 3, the one thing I would change
 
