@@ -33,6 +33,8 @@ class RiskBrief:
     control_sources: dict[str, str]  # control id -> which facet retrieved it
     retrieval_mode: str
     narrative: narrative_module.Narrative
+    # How close each control's call was: the runner up it beat and by how much.
+    control_margins: dict[str, dict[str, Any]] = field(default_factory=dict)
     hint: Any = None  # hints.HintMatch, the pack's own one line starting point
     rerank: Any = None  # rerank.RerankResult when model reranking was used
 
@@ -56,6 +58,7 @@ class RiskBrief:
                 "discussion": c.discussion,
                 "retrieved_for": self.control_sources.get(c.identifier, ""),
                 "is_enhancement": c.is_enhancement,
+                "retrieval": self.control_margins.get(c.identifier, {}),
             }
             for c in self.controls
         ]
@@ -165,6 +168,10 @@ def _retrieve_controls(
     Order matters in the output: the first control is presented as controlling,
     so facets are walked in priority order and the first hit of each is taken
     before any second hit.
+
+    The runner up for each facet is recorded alongside the winner. Fused scores
+    between two plausible controls are often very close, and a reader deciding
+    what to patch deserves to see whether the call was clear or a near tie.
     """
     facets = facets_for(risk)
     # The pack's own remediation hint is folded in as an extra facet. It is a
@@ -174,24 +181,47 @@ def _retrieve_controls(
     if hint_query:
         facets.append(Facet("Team hint", hint_query))
 
-    facet_hits: list[tuple[str, list[Control]]] = []
+    facet_hits: list[tuple[str, list[Control], dict[str, float]]] = []
     modes: set[str] = set()
     for facet in facets:
         controls, result = retriever.best_controls(facet.query, limit=per_facet)
         modes.add(result.mode)
-        facet_hits.append((facet.label, controls))
+        facet_hits.append((facet.label, controls, result.control_scores))
 
     merged: list[Control] = []
     sources: dict[str, str] = {}
+    margins: dict[str, dict[str, Any]] = {}
     for depth in range(per_facet):
-        for label, controls in facet_hits:
+        for label, controls, scores in facet_hits:
             if depth < len(controls):
                 control = controls[depth]
-                if control.identifier not in sources:
-                    sources[control.identifier] = label
-                    merged.append(control)
+                if control.identifier in sources:
+                    continue
+                sources[control.identifier] = label
+                merged.append(control)
+
+                # The next control this one beat, and by how much.
+                runner_up = controls[depth + 1] if depth + 1 < len(controls) else None
+                mine = scores.get(control.identifier, 0.0)
+                theirs = scores.get(runner_up.identifier, 0.0) if runner_up else 0.0
+                gap = ((mine - theirs) / mine * 100) if mine else 0.0
+                margins[control.identifier] = {
+                    "score": round(mine, 5),
+                    "runner_up": runner_up.identifier if runner_up else "",
+                    "runner_up_name": runner_up.name if runner_up else "",
+                    "runner_up_score": round(theirs, 5),
+                    "margin_percent": round(gap, 1),
+                    # A near tie between a base control and its own enhancement
+                    # is settled by rule, not by the score, so it is not the
+                    # coin flip the raw numbers make it look like.
+                    "same_family": bool(
+                        runner_up and runner_up.base_identifier == control.base_identifier
+                    ),
+                    "close": bool(runner_up and gap < 3.0),
+                }
+
     mode = "lexical" if "lexical" in modes else ("hybrid" if modes else "none")
-    return merged[:total], sources, mode
+    return merged[:total], sources, mode, margins
 
 
 # One cached analysis per distinct weighting, so the default view is instant
@@ -219,12 +249,13 @@ def analyse(force: bool = False, weights: Weights | None = None) -> Analysis:
     briefs: list[RiskBrief] = []
     for risk in chosen:
         hint_match = hints_module.match(risk.lead, pack)
-        controls, sources, mode = _retrieve_controls(risk, retriever, hint_match)
+        controls, sources, mode, margins = _retrieve_controls(risk, retriever, hint_match)
         briefs.append(
             RiskBrief(
                 risk=risk,
                 controls=controls,
                 control_sources=sources,
+                control_margins=margins,
                 retrieval_mode=mode,
                 narrative=narrative_module.write(risk, controls, hint=hint_match, use_llm=False),
                 hint=hint_match,
@@ -314,6 +345,7 @@ def enrich(
                 risk=brief.risk,
                 controls=controls,
                 control_sources=sources,
+                control_margins=brief.control_margins,
                 retrieval_mode=brief.retrieval_mode,
                 narrative=written,
                 hint=brief.hint,

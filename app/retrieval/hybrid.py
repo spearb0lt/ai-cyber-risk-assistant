@@ -52,6 +52,11 @@ class RetrievalResult:
     mode: str  # "hybrid", "lexical", or "dense"
     note: str = ""
     query: str = ""
+    # Fused score per control, populated by best_controls. Kept as a field on
+    # the result rather than a third return value so existing callers are
+    # untouched. Used to show a reader how close the call between the top two
+    # controls actually was.
+    control_scores: dict[str, float] = field(default_factory=dict)
 
     def control_ids(self) -> list[str]:
         seen: list[str] = []
@@ -159,6 +164,7 @@ class Retriever:
 
         best_ids = [cid for cid, _ in sorted(ranked.items(), key=sort_key)]
         controls = [self.controls[cid] for cid in best_ids if cid in self.controls][:limit]
+        result.control_scores = dict(ranked)
         return controls, result
 
 

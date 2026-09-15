@@ -477,3 +477,15 @@ input[type=range] {
 .advisory-quote .chain {
   font-family: var(--mono); font-size: 11.5px; color: var(--muted); margin-top: 5px;
 }
+
+/* retrieval transparency under each cited control */
+.retrieval {
+  margin-top: 8px;
+  font-size: 11.5px;
+  color: var(--dim);
+  border-top: 1px dashed var(--line-soft);
+  padding-top: 7px;
+}
+.retrieval .rs { font-family: var(--mono); color: var(--muted); }
+.retrieval.close { color: #f0dcb8; }
+.retrieval.close strong { color: var(--high); }

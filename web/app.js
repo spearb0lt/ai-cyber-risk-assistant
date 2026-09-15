@@ -239,6 +239,41 @@ function capFor(key) {
   return typeof cap === "number" ? cap : 0;
 }
 
+
+/* How clear the retrieval call was.
+ *
+ * A single cited control reads as certain whether it won by a mile or a hair,
+ * so the runner up and the margin are shown alongside it. A near tie against
+ * the control's own enhancement is settled by the base-control rule rather
+ * than by the score, and is labelled as such so it is not mistaken for the
+ * retriever being undecided between two different answers. */
+function retrievalLine(control) {
+  const r = control.retrieval;
+  if (!r || typeof r.score !== "number") return "";
+  if (!r.runner_up) {
+    return (
+      `<div class="retrieval"><span class="rs">fused score ${r.score.toFixed(3)}</span>` +
+      ` &middot; no other control was returned for this facet</div>`
+    );
+  }
+  const close = r.margin_percent < 10;
+  const who = r.same_family
+    ? `its own enhancement ${esc(r.runner_up)}`
+    : `${esc(r.runner_up)} ${esc(r.runner_up_name)}`;
+  const note = r.same_family
+    ? ` &middot; a base control is preferred over its own enhancement by rule`
+    : "";
+  return (
+    `<div class="retrieval${close ? " close" : ""}">` +
+    `<span class="rs">fused score ${r.score.toFixed(3)}</span>` +
+    ` &middot; ahead of ${who} at ${r.runner_up_score.toFixed(3)}` +
+    `, a margin of ${r.margin_percent.toFixed(0)}%` +
+    note +
+    (close ? ` &middot; <strong>close call, treat the choice as uncertain</strong>` : "") +
+    `</div>`
+  );
+}
+
 function riskCard(risk) {
   const lead = risk.lead;
 
@@ -308,6 +343,7 @@ function riskCard(risk) {
             `<div class="cmeta">${esc(c.family_name)}${c.retrieved_for ? ` &middot; retrieved for: ${esc(c.retrieved_for.toLowerCase())}` : ""}` +
             `${c.is_enhancement ? " &middot; control enhancement" : ""}</div>` +
             `<blockquote>${esc(c.excerpt)}</blockquote>` +
+            retrievalLine(c) +
             (c.discussion
               ? `<details><summary>Full discussion from the catalogue</summary><p>${esc(c.discussion)}</p></details>`
               : "") +

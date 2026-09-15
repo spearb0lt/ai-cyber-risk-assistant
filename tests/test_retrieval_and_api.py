@@ -415,3 +415,49 @@ def test_report_states_a_custom_weighting(client):
     text = client.post("/api/report.md", json={"weights": {"cap_cvss": 0}}).text
     # The brief must never silently present a tuned ranking as the default.
     assert "custom weighting" in text.lower()
+
+
+def test_every_cited_control_carries_its_retrieval_margin():
+    """A cited control reads as certain whether it won by a mile or a hair.
+
+    The runner up and the margin are recorded so the UI can show how clear the
+    call was, and so a reviewer can check the claim rather than take it.
+    """
+    result = analyse()
+    for brief in result.briefs:
+        assert brief.control_margins, f"risk {brief.risk.rank} carries no margins"
+        for control in brief.controls:
+            margin = brief.control_margins.get(control.identifier)
+            assert margin, f"{control.identifier} has no retrieval margin recorded"
+            assert margin["score"] > 0
+            if margin["runner_up"]:
+                assert margin["runner_up"] != control.identifier
+                assert margin["score"] >= margin["runner_up_score"]
+                assert 0 <= margin["margin_percent"] <= 100
+
+
+def test_margins_survive_the_api(client):
+    payload = client.get("/api/analysis").json()
+    for risk in payload["risks"]:
+        for control in risk["controls"]:
+            assert "retrieval" in control
+            assert "score" in control["retrieval"]
+
+
+def test_a_base_control_beating_its_own_enhancement_is_labelled_as_such():
+    """SI-2 over SI-2(3) is settled by rule, not by the score being close.
+
+    Labelling it keeps a reader from reading that pairing as the retriever
+    being undecided between two different answers.
+    """
+    result = analyse()
+    seen_same_family = False
+    for brief in result.briefs:
+        for identifier, margin in brief.control_margins.items():
+            if not margin.get("runner_up"):
+                continue
+            root = identifier.split("(")[0]
+            runner_root = margin["runner_up"].split("(")[0]
+            assert margin["same_family"] == (root == runner_root)
+            seen_same_family = seen_same_family or margin["same_family"]
+    assert seen_same_family, "fixture should contain a base versus enhancement pairing"
