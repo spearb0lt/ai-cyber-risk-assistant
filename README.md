@@ -273,9 +273,12 @@ counted at full strength.
 ## Supporting question 3, the one thing I would change
 
 **Replace the hand-tuned weights with something calibrated, and show the uncertainty.** Making
-every weight adjustable, which this now does, is only half an answer: it lets a reviewer
-explore the model but still leaves the defaults as my judgement encoded as integers. The
-sharpest evidence is in this repository's own test suite. Risks 4 and 5 sit **0.2 points
+every weight adjustable, which this now does, is only half an answer. **You can explore the
+weights; you still cannot know which weighting is right.** The panel lets a reviewer move all 50
+numbers and watch the top 5 reorder, but it offers no evidence about which arrangement is
+correct, and the defaults remain my judgement encoded as integers.
+
+The sharpest evidence is in this repository's own test suite. Risks 4 and 5 sit **0.2 points
 apart**, and `test_the_briefs_own_example_holds` had to be narrowed to the brief's literal
 wording because a looser reading of it fails: CVE-2024-23897 on an internal development build
 server scores 63.9, about two points above a well patched internet facing Jira box at 62.0.
@@ -284,14 +287,22 @@ part of a campaign explicitly targeting CI/CD, but a two point margin is well in
 those weights carry, and the brief currently presents it with a confidence the method has not
 earned.
 
+There is one external check I have not used. The MDR advisory states its own recommended
+priority order: internet exposure, then active exploitation, then ransomware association, then
+business criticality, then missing compensating controls. My model leads with exploitation at 30
+and exposure at 22, so it inverts the advisory's top two. That may well be the right call, since
+KEV confirmation is harder evidence than reachability, but it is a disagreement with the one
+authority in the data pack that expressed an opinion, and this README should not pass over it in
+silence.
+
 With another day I would, first, run a sensitivity sweep server side: perturb every weight by
-plus or minus 25 per cent a few hundred times and report how often each risk stays in the top
-5, turning "these are the top 5" into "these three are stable under any reasonable weighting,
-and the last two slots are contested between these four". Second, fold in EPSS exploitation
+plus or minus 25 per cent a few hundred times and report how often each risk stays in the top 5,
+turning "these are the top 5" into "these three are stable under any reasonable weighting, and
+the last two slots are contested between these four". Second, fold in EPSS exploitation
 probability so the exploitability factor rests on a published empirical estimate rather than on
-binary KEV membership plus a feed's own boolean. That is the biggest gap because everything
-else is auditable, every point traces to a named record, while the weights themselves remain
-the one input nobody can independently check.
+binary KEV membership plus a feed's own boolean. That is the biggest gap because everything else
+is auditable, every point traces to a named record, while the weights themselves remain the one
+input nobody can independently check.
 
 ## Running it locally
 
