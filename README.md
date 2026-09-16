@@ -19,6 +19,17 @@ retrieved from the real NIST SP 800-53 Rev. 5 catalogue.
 
 ---
 
+## What one risk looks like
+
+Each of the five entries carries the asset, the vulnerability and its CVE, the matched threat
+intel, the business service at risk, the paragraph of this morning's MDR advisory that names
+it, a plain English rationale, the full score breakdown, the NIST controls retrieved for it
+with verbatim text, the security team's own note, and the caveats on the finding.
+
+![A single risk card](docs/risk-card.png)
+
+---
+
 ## What it does
 
 | | |
@@ -86,6 +97,20 @@ this dataset:
 - `pearson(score, cvss) = 0.53`, correlated, because CVSS is real signal, but not governing
 
 `tests/test_scoring.py` asserts each of these as a property of the output, not as a comment.
+
+The **CVSS only** preset in the tuning panel makes the argument without any prose. On the left
+is the model as published; on the right is the same data ranked by severity alone.
+
+| Default model | CVSS only |
+|---|---|
+| ![Default ranking](docs/ranking-default.png) | ![Ranked by CVSS alone](docs/ranking-cvss-only.png) |
+
+Severity alone puts a WordPress plugin flaw on an HR site above CitrixBleed on the payment
+gateway. It also cannot separate the five at all: every entry ties at 100.0. With CVSS as the
+only measure the leads sit within 0.2 of each other, at 9.8 or 10.0, and the blast radius
+amplifier then pushes all of them to the ceiling. The published model spreads the same five
+across 98.0 to 82.5 on evidence, so the CISO gets an order to act on rather than a five way
+tie.
 
 ### Every weight is adjustable, and any factor can be switched off
 
@@ -261,6 +286,11 @@ the 19 gaps beside the 5 ranked risks.
 field in the inventory, so the system can say "last scanned 3 days ago, clean" or "never scanned",
 and then treat an unscanned internet-facing asset as a risk in its own right rather than a
 footnote. That is a change to the data contract, not to the code.
+
+All 25 are listed in the interface, next to the five ranked risks, so the gaps are as visible
+as the findings.
+
+![The data quality tab](docs/data-quality.png)
 
 Two further failure modes the system already guards against, since they are the obvious ones:
 **a language model citing a control it never retrieved**, where `briefing/guard.py` drops any
