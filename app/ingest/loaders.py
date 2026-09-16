@@ -14,6 +14,22 @@ from functools import lru_cache
 from pathlib import Path
 
 from .. import settings
+from ..llm.base import sanitise_output
+
+
+def _prose(value: str | None) -> str:
+    """Normalise a free-text field that will be displayed.
+
+    The pack uses typographic dashes in several titles and summaries, for
+    example "Windows Server 2012 R2 End of Support - No Security Patches".
+    They are passed through the same ASCII normalisation as model output so
+    the brief reads consistently wherever the text came from.
+
+    Applied only to prose. Join keys such as cve, asset_id and
+    business_service are left exactly as written, because normalising one
+    side of a join and not the other would silently break it.
+    """
+    return sanitise_output((value or "").strip())
 
 YES = {"yes", "y", "true", "1"}
 
@@ -179,7 +195,7 @@ def _load_assets(path: Path) -> dict[str, Asset]:
     for row in _read_csv(path):
         asset = Asset(
             asset_id=row.get("asset_id", ""),
-            asset_name=row.get("asset_name", ""),
+            asset_name=_prose(row.get("asset_name")),
             asset_type=row.get("asset_type", ""),
             environment=row.get("environment", ""),
             owner_team=row.get("owner_team", ""),
@@ -190,7 +206,7 @@ def _load_assets(path: Path) -> dict[str, Asset]:
             edr_installed=_flag(row.get("edr_installed")),
             last_seen_days=_int(row.get("last_seen_days")),
             location=row.get("location", ""),
-            vendor_product=row.get("vendor_product", ""),
+            vendor_product=_prose(row.get("vendor_product")),
         )
         if asset.asset_id:
             out[asset.asset_id] = asset
@@ -202,7 +218,7 @@ def _load_vulnerabilities(path: Path) -> list[Vulnerability]:
         Vulnerability(
             vuln_id=row.get("vuln_id", ""),
             asset_id=row.get("asset_id", ""),
-            vulnerability_name=row.get("vulnerability_name", ""),
+            vulnerability_name=_prose(row.get("vulnerability_name")),
             cve=row.get("cve", ""),
             severity=row.get("severity", ""),
             cvss=_float(row.get("cvss")),
@@ -212,7 +228,7 @@ def _load_vulnerabilities(path: Path) -> list[Vulnerability]:
             asset_exposure=row.get("asset_exposure", ""),
             auth_required=_flag(row.get("auth_required")),
             status=row.get("status", ""),
-            affected_component=row.get("affected_component", ""),
+            affected_component=_prose(row.get("affected_component")),
         )
         for row in _read_csv(path)
         if row.get("vuln_id")
@@ -223,8 +239,8 @@ def _load_intel(path: Path) -> list[ThreatIntel]:
     return [
         ThreatIntel(
             intel_id=row.get("intel_id", ""),
-            threat_actor=row.get("threat_actor", ""),
-            campaign_name=row.get("campaign_name", ""),
+            threat_actor=_prose(row.get("threat_actor")),
+            campaign_name=_prose(row.get("campaign_name")),
             target_sector=row.get("target_sector", ""),
             target_region=row.get("target_region", ""),
             matched_cve_or_control=row.get("matched_cve_or_control", ""),
@@ -232,7 +248,7 @@ def _load_intel(path: Path) -> list[ThreatIntel]:
             active_last_seen=row.get("active_last_seen", ""),
             ransomware_association=_flag(row.get("ransomware_association")),
             confidence=row.get("confidence", ""),
-            summary=row.get("summary", ""),
+            summary=_prose(row.get("summary")),
         )
         for row in _read_csv(path)
         if row.get("intel_id")
@@ -245,7 +261,7 @@ def _load_services(path: Path) -> dict[str, BusinessService]:
         service = BusinessService(
             business_service=row.get("business_service", ""),
             business_owner=row.get("business_owner", ""),
-            business_impact=row.get("business_impact", ""),
+            business_impact=_prose(row.get("business_impact")),
             customer_facing=_flag(row.get("customer_facing")),
             compliance_scope=row.get("compliance_scope", ""),
             revenue_impact=row.get("revenue_impact", ""),
@@ -261,10 +277,10 @@ def _load_services(path: Path) -> dict[str, BusinessService]:
 def _load_hints(path: Path) -> list[RemediationHint]:
     return [
         RemediationHint(
-            finding_type=row.get("finding_type", ""),
-            recommended_action=row.get("recommended_action", ""),
+            finding_type=_prose(row.get("finding_type")),
+            recommended_action=_prose(row.get("recommended_action")),
             priority_hint=row.get("priority_hint", ""),
-            validation_evidence=row.get("validation_evidence", ""),
+            validation_evidence=_prose(row.get("validation_evidence")),
         )
         for row in _read_csv(path)
         if row.get("finding_type")
